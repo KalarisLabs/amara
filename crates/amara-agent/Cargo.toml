@@ -1,0 +1,16 @@
+[package]
+name = "amara-agent"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "High-level Agent SDK for AMARA"
+
+[dependencies]
+amara-core = { workspace = true }
+amara-runtime = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = "0.1"
+serde_json = { workspace = true }

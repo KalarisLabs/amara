@@ -1,0 +1,23 @@
+[package]
+name = "amara-protocol"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "AMARA binary protocol: packet encoding, decoding, framing"
+
+[dependencies]
+amara-core = { workspace = true }
+amara-crypto = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bytes = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+crc = { workspace = true }
+lz4_flex = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+rand = { workspace = true }

@@ -1,0 +1,20 @@
+[package]
+name = "amara-runtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Agent runtime for task execution and capability routing in AMARA"
+
+[dependencies]
+amara-core = { workspace = true }
+amara-protocol = { workspace = true }
+amara-crypto = { workspace = true }
+amara-mesh = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+dashmap = { workspace = true }
+async-trait = "0.1"

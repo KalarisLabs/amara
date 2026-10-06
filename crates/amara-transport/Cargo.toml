@@ -1,0 +1,17 @@
+[package]
+name = "amara-transport"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Transport layer abstractions and simulated transport for AMARA"
+
+[dependencies]
+amara-core = { workspace = true }
+async-trait = "0.1"
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }

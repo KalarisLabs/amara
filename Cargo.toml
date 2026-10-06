@@ -1,0 +1,93 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/amara-core",
+    "crates/amara-crypto",
+    "crates/amara-protocol",
+    "crates/amara-mesh",
+    "crates/amara-transport",
+    "crates/amara-runtime",
+    "crates/amara-agent",
+    "crates/amara-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+authors = ["AMARA Contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/amara-network/amara"
+description = "A decentralized proximity network for AI agents"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Cryptography
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+blake3 = "1"
+chacha20poly1305 = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+snow = "0.9"
+
+# Random
+rand = "0.8"
+rand_chacha = "0.3"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+bytes = "1"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "6"
+lru = "0.12"
+lz4_flex = "0.11"
+crc = "3"
+base64 = "0.22"
+hex = "0.4"
+toml = "0.8"
+dirs = "6"
+crossterm = "0.28"
+ratatui = "0.29"
+clap = { version = "4", features = ["derive"] }
+
+# BLE (behind feature flag)
+btleplug = "0.11"
+
+# HTTP (for local API and model backends)
+axum = { version = "0.8", features = ["ws"] }
+reqwest = { version = "0.12", features = ["json"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+tokio-tungstenite = "0.24"
+
+# Storage
+redb = "2"
+
+# Testing
+proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# Workspace crates
+amara-core = { path = "crates/amara-core" }
+amara-crypto = { path = "crates/amara-crypto" }
+amara-protocol = { path = "crates/amara-protocol" }
+amara-mesh = { path = "crates/amara-mesh" }
+amara-transport = { path = "crates/amara-transport" }
+amara-runtime = { path = "crates/amara-runtime" }
+amara-agent = { path = "crates/amara-agent" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = 3

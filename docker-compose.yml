@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  amara-node:
+    build: .
+    container_name: amara-node
+    # TUI requires a TTY and stdin
+    tty: true
+    stdin_open: true
+    # Use host network for proximity discovery (UDP broadcasts, etc.)
+    network_mode: "host"
+    restart: unless-stopped

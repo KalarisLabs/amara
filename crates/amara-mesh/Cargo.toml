@@ -1,0 +1,22 @@
+[package]
+name = "amara-mesh"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Mesh routing, deduplication, and peer management for AMARA"
+
+[dependencies]
+amara-core = { workspace = true }
+amara-protocol = { workspace = true }
+amara-crypto = { workspace = true }
+amara-transport = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+lru = { workspace = true }
+dashmap = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+uuid = { workspace = true }
