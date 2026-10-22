@@ -18,3 +18,9 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 dashmap = { workspace = true }
 async-trait = "0.1"
+serde = { workspace = true }
+chrono = { workspace = true }
+x25519-dalek = { workspace = true }
+
+[dev-dependencies]
+amara-transport = { workspace = true, default-features = false }

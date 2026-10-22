@@ -74,18 +74,52 @@ pub struct BatteryState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AmaraEvent {
-    PeerJoined { peer_id: String, name: String },
-    PeerLeft { peer_id: String, name: String },
-    CapabilityChanged { peer_id: String },
-    TaskCreated { task_id: String, capability: String },
-    TaskRouted { task_id: String, target: String },
-    TaskForwarded { task_id: String, relay: String },
-    TaskAccepted { task_id: String, agent: String },
-    TaskCompleted { task_id: String, agent: String },
-    TaskFailed { task_id: String, error: String },
-    PacketDropped { reason: String },
-    RouteChanged { peer_id: String, hops: u8 },
-    SecurityEvent { event: String, peer_id: Option<String> },
+    PeerJoined {
+        peer_id: String,
+        name: String,
+    },
+    PeerLeft {
+        peer_id: String,
+        name: String,
+    },
+    CapabilityChanged {
+        peer_id: String,
+    },
+    TaskCreated {
+        task_id: String,
+        capability: String,
+    },
+    TaskRouted {
+        task_id: String,
+        target: String,
+    },
+    TaskForwarded {
+        task_id: String,
+        relay: String,
+    },
+    TaskAccepted {
+        task_id: String,
+        agent: String,
+    },
+    TaskCompleted {
+        task_id: String,
+        agent: String,
+    },
+    TaskFailed {
+        task_id: String,
+        error: String,
+    },
+    PacketDropped {
+        reason: String,
+    },
+    RouteChanged {
+        peer_id: String,
+        hops: u8,
+    },
+    SecurityEvent {
+        event: String,
+        peer_id: Option<String>,
+    },
 }
 
 #[cfg(test)]

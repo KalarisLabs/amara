@@ -2,7 +2,7 @@
 
 use crate::header::{PacketFlags, PacketHeader, PacketType};
 use amara_core::peer::PeerId;
-use amara_core::{AmaraError, Result, HEADER_SIZE, PROTOCOL_VERSION, SIGNATURE_SIZE};
+use amara_core::{AmaraError, HEADER_SIZE, PROTOCOL_VERSION, Result, SIGNATURE_SIZE};
 
 /// A complete AMARA packet: header + payload + optional signature.
 #[derive(Debug, Clone)]
@@ -55,10 +55,13 @@ impl Packet {
 
     /// Sign this packet with an Ed25519 signing key.
     pub fn sign(&mut self, signing_key: &ed25519_dalek::SigningKey) {
+        // The SIGNED flag and payload length are part of the signed bytes,
+        // so they must be final before the signature is computed.
+        self.header.flags.set(PacketFlags::SIGNED);
+        self.header.payload_length = self.payload.len() as u32;
         let header_bytes = self.header.encode();
         let sig = amara_crypto::signing::sign_packet(signing_key, &header_bytes, &self.payload);
         self.signature = Some(sig);
-        self.header.flags.set(PacketFlags::SIGNED);
     }
 
     /// Verify this packet's signature.
@@ -203,6 +206,17 @@ mod tests {
         let encoded = pkt.encode();
         let decoded = Packet::decode(&encoded).unwrap();
         assert!(decoded.verify(&key.verifying_key()));
+
+        // A relay decrements TTL; the signature must survive re-encoding.
+        let mut relayed = decoded.clone();
+        assert!(relayed.header.decrement_ttl());
+        let relayed = Packet::decode(&relayed.encode()).unwrap();
+        assert!(relayed.verify(&key.verifying_key()));
+
+        // Tampering with the payload must break it.
+        let mut tampered = relayed.clone();
+        tampered.payload[0] ^= 1;
+        assert!(!tampered.verify(&key.verifying_key()));
     }
 
     #[test]

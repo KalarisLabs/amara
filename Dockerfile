@@ -1,30 +1,15 @@
-FROM rust:1.80-slim-bullseye AS builder
-
-WORKDIR /usr/src/amara
-
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy the entire workspace
+FROM rust:1-slim-bookworm AS builder
+WORKDIR /src
 COPY . .
+RUN cargo build --release --locked --bin amara
 
-# Build the CLI release binary
-RUN cargo build --release --bin amara-cli
-
-# Create a lightweight runtime image
-FROM debian:bullseye-slim
-
-WORKDIR /app
-
-# Copy the compiled binary from the builder
-COPY --from=builder /usr/src/amara/target/release/amara-cli /usr/local/bin/amara-cli
-
-# Set the entrypoint to the CLI
-ENTRYPOINT ["amara-cli"]
-
-# Default command launches the TUI
-CMD ["tui"]
+FROM debian:bookworm-slim
+RUN useradd --create-home --uid 10001 amara
+COPY --from=builder /src/target/release/amara /usr/local/bin/amara
+USER amara
+ENV AMARA_HOME=/home/amara/.amara
+VOLUME ["/home/amara/.amara"]
+# 7433/udp: LAN mesh (needs host networking for multicast) · 7432/tcp: HTTP API (token-protected)
+EXPOSE 7433/udp 7432/tcp
+ENTRYPOINT ["amara"]
+CMD ["up", "--api", "0.0.0.0:7432"]

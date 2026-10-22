@@ -54,7 +54,7 @@ impl NodeIdentity {
     /// Generate identity using a specific RNG (for deterministic testing).
     pub fn generate_deterministic(
         display_name: impl Into<String>,
-        rng: &mut impl rand::CryptoRngCore,
+        rng: &mut (impl rand::RngCore + rand::CryptoRng),
     ) -> Self {
         let signing_key = SigningKey::generate(rng);
         let verifying_key = signing_key.verifying_key();

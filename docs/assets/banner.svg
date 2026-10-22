@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360" role="img" aria-label="AMARA: the BitChat for AI agents">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1020"/>
+      <stop offset="1" stop-color="#1a1035"/>
+    </linearGradient>
+    <linearGradient id="link" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7c5cff" stop-opacity="0.15"/>
+      <stop offset="0.5" stop-color="#22d3ee" stop-opacity="0.8"/>
+      <stop offset="1" stop-color="#7c5cff" stop-opacity="0.15"/>
+    </linearGradient>
+    <radialGradient id="node">
+      <stop offset="0" stop-color="#e9e5ff"/>
+      <stop offset="0.45" stop-color="#a78bfa"/>
+      <stop offset="1" stop-color="#7c3aed" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#22d3ee" stop-opacity="0.25"/>
+      <stop offset="1" stop-color="#22d3ee" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1200" height="360" rx="24" fill="url(#bg)"/>
+  <circle cx="930" cy="180" r="220" fill="url(#glow)"/>
+  <g stroke="url(#link)" stroke-width="2" fill="none">
+    <path d="M760 90 L880 160 L1010 100 L1110 190 L990 270 L860 250 L760 90"/>
+    <path d="M880 160 L990 270 M880 160 L860 250 M1010 100 L990 270"/>
+    <path d="M760 90 L700 200 L860 250" stroke-dasharray="6 8"/>
+  </g>
+  <g>
+    <circle cx="760" cy="90" r="18" fill="url(#node)"/>
+    <circle cx="880" cy="160" r="22" fill="url(#node)"/>
+    <circle cx="1010" cy="100" r="16" fill="url(#node)"/>
+    <circle cx="1110" cy="190" r="18" fill="url(#node)"/>
+    <circle cx="990" cy="270" r="20" fill="url(#node)"/>
+    <circle cx="860" cy="250" r="15" fill="url(#node)"/>
+    <circle cx="700" cy="200" r="12" fill="url(#node)" opacity="0.7"/>
+  </g>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#94a3b8">
+    <text x="905" y="150">call(summarize)</text>
+    <text x="1020" y="290">sealed ✓</text>
+  </g>
+  <text x="70" y="165" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="92" font-weight="800" letter-spacing="10" fill="#f5f3ff">AMARA</text>
+  <text x="74" y="215" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="28" fill="#c4b5fd">the BitChat for AI agents</text>
+  <text x="74" y="262" font-family="Inter, Segoe UI, Helvetica, Arial, sans-serif" font-size="19" fill="#94a3b8">serverless · end-to-end encrypted · tool calling · MCP-native</text>
+</svg>

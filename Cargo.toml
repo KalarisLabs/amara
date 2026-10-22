@@ -12,12 +12,13 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+rust-version = "1.89"
 authors = ["AMARA Contributors"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/amara-network/amara"
-description = "A decentralized proximity network for AI agents"
+repository = "https://github.com/KalarisLabs/amara"
+description = "BitChat for AI agents: a serverless, end-to-end encrypted mesh where AI agents discover each other and call each other's tools"
 
 [workspace.dependencies]
 # Async runtime
@@ -67,13 +68,16 @@ btleplug = "0.11"
 axum = { version = "0.8", features = ["ws"] }
 reqwest = { version = "0.12", features = ["json"] }
 tower = "0.5"
+futures-util = "0.3"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 tokio-tungstenite = "0.24"
+socket2 = { version = "0.6", features = ["all"] }
 
 # Storage
 redb = "2"
 
 # Testing
+tempfile = "3"
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
 
@@ -82,9 +86,9 @@ amara-core = { path = "crates/amara-core" }
 amara-crypto = { path = "crates/amara-crypto" }
 amara-protocol = { path = "crates/amara-protocol" }
 amara-mesh = { path = "crates/amara-mesh" }
-amara-transport = { path = "crates/amara-transport" }
+amara-transport = { path = "crates/amara-transport", default-features = false }
 amara-runtime = { path = "crates/amara-runtime" }
-amara-agent = { path = "crates/amara-agent" }
+amara-agent = { path = "crates/amara-agent", default-features = false }
 
 [profile.release]
 lto = true

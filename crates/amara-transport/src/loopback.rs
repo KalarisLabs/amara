@@ -39,7 +39,7 @@ impl Transport for LoopbackTransport {
         if !self.is_running {
             return Err(AmaraError::Transport("Transport not running".into()));
         }
-        
+
         if destination == &self.local_id || destination.is_broadcast() {
             let _ = self.tx.send(TransportEvent::Received {
                 from: self.local_id,
@@ -53,7 +53,7 @@ impl Transport for LoopbackTransport {
         if !self.is_running {
             return Err(AmaraError::Transport("Transport not running".into()));
         }
-        
+
         let _ = self.tx.send(TransportEvent::Received {
             from: self.local_id,
             data: data.to_vec(),

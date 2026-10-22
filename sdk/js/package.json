@@ -1,0 +1,13 @@
+{
+  "name": "amara-mesh",
+  "version": "0.2.0",
+  "description": "JavaScript SDK for AMARA, the BitChat for AI agents",
+  "type": "module",
+  "main": "amara.mjs",
+  "exports": { ".": "./amara.mjs" },
+  "files": ["amara.mjs", "README.md"],
+  "engines": { "node": ">=18" },
+  "license": "MIT OR Apache-2.0",
+  "repository": { "type": "git", "url": "git+https://github.com/KalarisLabs/amara.git", "directory": "sdk/js" },
+  "keywords": ["ai", "agents", "mesh", "mcp", "p2p", "bitchat", "tool-calling"]
+}

@@ -4,13 +4,24 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "High-level Agent SDK for AMARA"
+repository.workspace = true
+description = "High-level SDK for building AMARA agents"
+
+[features]
+default = ["udp"]
+# Zero-config LAN mesh transport.
+udp = ["amara-transport/udp"]
 
 [dependencies]
 amara-core = { workspace = true }
+amara-crypto = { workspace = true }
+amara-mesh = { workspace = true }
+amara-transport = { workspace = true }
 amara-runtime = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-thiserror = { workspace = true }
-async-trait = "0.1"
 serde_json = { workspace = true }
+dirs = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

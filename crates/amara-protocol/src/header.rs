@@ -4,7 +4,7 @@
 //! All multi-byte integers are big-endian.
 
 use amara_core::peer::PeerId;
-use amara_core::{AmaraError, Result, HEADER_SIZE, MAX_PACKET_SIZE, PROTOCOL_VERSION};
+use amara_core::{AmaraError, HEADER_SIZE, MAX_PACKET_SIZE, PROTOCOL_VERSION, Result};
 
 /// Packet type identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -30,6 +30,8 @@ pub enum PacketType {
     // Events
     Event = 0x30,
     Heartbeat = 0x31,
+    /// Human/agent message (direct or broadcast channel).
+    Message = 0x32,
 
     // Control
     Ack = 0x40,
@@ -69,6 +71,7 @@ impl PacketType {
             0x22 => Some(Self::ResultComplete),
             0x30 => Some(Self::Event),
             0x31 => Some(Self::Heartbeat),
+            0x32 => Some(Self::Message),
             0x40 => Some(Self::Ack),
             0x41 => Some(Self::Error),
             0x50 => Some(Self::RouteRequest),
@@ -91,6 +94,7 @@ impl PacketType {
             Self::Announce
                 | Self::Capability
                 | Self::Heartbeat
+                | Self::Message
                 | Self::Task
                 | Self::Result
                 | Self::ResultChunk
@@ -106,11 +110,7 @@ impl PacketType {
     pub fn is_broadcast(&self) -> bool {
         matches!(
             self,
-            Self::Announce
-                | Self::Capability
-                | Self::Heartbeat
-                | Self::Event
-                | Self::RouteRequest
+            Self::Announce | Self::Capability | Self::Heartbeat | Self::Event | Self::RouteRequest
         )
     }
 }
@@ -314,7 +314,7 @@ impl PacketHeader {
 
 /// Compute CRC-16 (IBM/ANSI variant) over a byte slice.
 fn compute_crc16(data: &[u8]) -> u16 {
-    use crc::{Crc, CRC_16_IBM_SDLC};
+    use crc::{CRC_16_IBM_SDLC, Crc};
     const CRC: Crc<u16> = Crc::<u16>::new(&CRC_16_IBM_SDLC);
     CRC.checksum(data)
 }
@@ -426,11 +426,15 @@ mod tests {
     #[test]
     fn all_packet_types_parse() {
         let types = [
-            0x01u8, 0x02, 0x03, 0x04, 0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x30, 0x31,
+            0x01u8, 0x02, 0x03, 0x04, 0x10, 0x11, 0x12, 0x13, 0x20, 0x21, 0x22, 0x30, 0x31, 0x32,
             0x40, 0x41, 0x50, 0x51, 0x60, 0x61, 0x70, 0x71, 0x72, 0x80, 0x81,
         ];
         for t in types {
-            assert!(PacketType::from_u8(t).is_some(), "type 0x{:02x} should parse", t);
+            assert!(
+                PacketType::from_u8(t).is_some(),
+                "type 0x{:02x} should parse",
+                t
+            );
         }
 
         // Reserved range should not parse

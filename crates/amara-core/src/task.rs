@@ -96,7 +96,7 @@ fn default_status() -> TaskStatus {
 }
 
 /// Constraints on task execution.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskConstraints {
     /// Maximum cost (0 = free).
     #[serde(default)]
@@ -110,7 +110,17 @@ pub struct TaskConstraints {
 }
 
 fn default_max_depth() -> u8 {
-    5
+    crate::constants::MAX_DELEGATION_DEPTH
+}
+
+impl Default for TaskConstraints {
+    fn default() -> Self {
+        Self {
+            max_cost: 0,
+            max_latency_ms: 0,
+            max_delegation_depth: default_max_depth(),
+        }
+    }
 }
 
 /// Result of a completed task.
@@ -196,7 +206,11 @@ mod tests {
     #[test]
     fn task_creation() {
         let issuer = PeerId::from_bytes([1; 8]);
-        let task = Task::new(issuer, "vision", serde_json::json!({"prompt": "describe image"}));
+        let task = Task::new(
+            issuer,
+            "vision",
+            serde_json::json!({"prompt": "describe image"}),
+        );
         assert_eq!(task.capability, "vision");
         assert_eq!(task.status, TaskStatus::Created);
         assert!(task.has_visited(&issuer));

@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use rand::Rng;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{broadcast, mpsc, Mutex};
-use tokio::time::{sleep, Duration};
+use tokio::sync::{Mutex, broadcast, mpsc};
+use tokio::time::{Duration, sleep};
 
 /// Configuration for a link between two simulated nodes.
 #[derive(Debug, Clone, Copy)]
@@ -53,7 +53,7 @@ impl SimulatorHub {
         let mut top = self.topology.lock().await;
         top.insert((a, b), config);
         top.insert((b, a), config);
-        
+
         // Notify both nodes they discovered each other
         let nodes = self.nodes.lock().await;
         if let Some(tx) = nodes.get(&a) {
@@ -97,7 +97,7 @@ impl SimulatorHub {
     /// Send data directly to a specific connected node.
     pub async fn send(&self, from: PeerId, to: PeerId, data: Vec<u8>) -> Result<()> {
         let config = self.topology.lock().await.get(&(from, to)).copied();
-        
+
         if let Some(config) = config {
             let tx = self.nodes.lock().await.get(&to).cloned();
             if let Some(tx) = tx {
@@ -114,13 +114,17 @@ impl SimulatorHub {
         data: Vec<u8>,
         config: LinkConfig,
     ) {
-        tokio::spawn(async move {
+        let (dropped, latency) = {
             let mut rng = rand::thread_rng();
-            if config.drop_probability > 0.0 && rng.gen::<f32>() < config.drop_probability {
-                return; // Packet dropped
-            }
-
-            let latency = rng.gen_range(config.latency_min_ms..=config.latency_max_ms);
+            let dropped =
+                config.drop_probability > 0.0 && rng.r#gen::<f32>() < config.drop_probability;
+            let max = config.latency_max_ms.max(config.latency_min_ms);
+            (dropped, rng.gen_range(config.latency_min_ms..=max))
+        };
+        if dropped {
+            return;
+        }
+        tokio::spawn(async move {
             sleep(Duration::from_millis(latency)).await;
 
             let _ = tx.send(TransportEvent::Received { from, data }).await;
@@ -141,7 +145,7 @@ impl SimulatedTransport {
     pub async fn new(local_id: PeerId, hub: SimulatorHub) -> Self {
         let rx = hub.register(local_id).await;
         let (events_tx, _) = broadcast::channel(1024);
-        
+
         Self {
             local_id,
             hub,
@@ -180,7 +184,9 @@ impl Transport for SimulatedTransport {
         if !self.is_running {
             return Err(AmaraError::Transport("Transport not running".into()));
         }
-        self.hub.send(self.local_id, *destination, data.to_vec()).await
+        self.hub
+            .send(self.local_id, *destination, data.to_vec())
+            .await
     }
 
     async fn broadcast(&self, data: &[u8]) -> Result<()> {

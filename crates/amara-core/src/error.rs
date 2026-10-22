@@ -83,6 +83,9 @@ pub enum AmaraError {
     #[error("task expired")]
     TaskExpired,
 
+    #[error("timed out: {0}")]
+    Timeout(String),
+
     // IO / system errors
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

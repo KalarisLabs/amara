@@ -1,8 +1,8 @@
+use amara_core::constants::DEDUP_CACHE_SIZE;
 use amara_core::peer::PeerId;
 use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::sync::Mutex;
-use amara_core::constants::DEDUP_CACHE_SIZE;
 
 /// Deduplication cache to prevent processing the same packet twice.
 /// Keyed by (source_id, message_id).
@@ -23,7 +23,7 @@ impl DedupCache {
     pub fn is_duplicate(&self, source: PeerId, message_id: [u8; 8]) -> bool {
         let key = (source, message_id);
         let mut cache = self.cache.lock().unwrap();
-        
+
         if cache.contains(&key) {
             true
         } else {

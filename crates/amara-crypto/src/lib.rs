@@ -5,11 +5,13 @@
 //! - Packet signing and verification
 //! - Authenticated encryption (ChaCha20-Poly1305)
 //! - Session key derivation (HKDF)
+//! - Stateless end-to-end sealed boxes (ephemeral X25519 + ChaCha20-Poly1305)
 //!
 //! This crate wraps well-audited libraries. It does not invent cryptography.
 
 pub mod encryption;
 pub mod identity;
+pub mod sealed;
 pub mod session;
 pub mod signing;
 

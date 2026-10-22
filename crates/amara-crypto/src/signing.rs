@@ -7,6 +7,17 @@
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 
+/// Zero the hop-mutable header bytes (TTL and checksum) before signing/verifying.
+fn mask_mutable_fields(buf: &mut [u8]) {
+    if buf.len() > 3 {
+        buf[3] = 0;
+    }
+    if buf.len() >= amara_core::HEADER_SIZE {
+        buf[40] = 0;
+        buf[41] = 0;
+    }
+}
+
 /// Sign a packet (header + payload), producing a 64-byte Ed25519 signature.
 ///
 /// The TTL byte at offset 3 is zeroed for signing purposes, allowing relays
@@ -16,10 +27,7 @@ pub fn sign_packet(signing_key: &SigningKey, header: &[u8], payload: &[u8]) -> [
     signable.extend_from_slice(header);
     signable.extend_from_slice(payload);
 
-    // Zero the TTL byte for signing
-    if signable.len() > 3 {
-        signable[3] = 0;
-    }
+    mask_mutable_fields(&mut signable);
 
     let signature = signing_key.sign(&signable);
     signature.to_bytes()
@@ -39,14 +47,9 @@ pub fn verify_packet(
     verifiable.extend_from_slice(header);
     verifiable.extend_from_slice(payload);
 
-    // Zero the TTL byte for verification
-    if verifiable.len() > 3 {
-        verifiable[3] = 0;
-    }
+    mask_mutable_fields(&mut verifiable);
 
-    let Ok(signature) = Signature::from_bytes(signature_bytes) else {
-        return false;
-    };
+    let signature = Signature::from_bytes(signature_bytes);
 
     verifying_key.verify(&verifiable, &signature).is_ok()
 }
@@ -79,8 +82,10 @@ mod tests {
 
         let sig = sign_packet(&signing_key, &header, payload);
 
-        // Change TTL (simulating relay)
+        // Change TTL and checksum (simulating relay)
         header[3] = 5;
+        header[40] = 0xAB;
+        header[41] = 0xCD;
 
         // Signature should still be valid
         assert!(verify_packet(&verifying_key, &header, payload, &sig));

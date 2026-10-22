@@ -16,8 +16,10 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 crc = { workspace = true }
 lz4_flex = { workspace = true }
+blake3 = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
-rand = { workspace = true }

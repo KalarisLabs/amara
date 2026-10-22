@@ -31,7 +31,7 @@ pub const DEFAULT_FRAGMENT_PAYLOAD: usize = 488;
 pub const BLE_MTU: usize = 500;
 
 /// Maximum fragments per message.
-pub const MAX_FRAGMENTS: u16 = 256;
+pub const MAX_FRAGMENTS: u16 = 8192;
 
 /// Fragment reassembly timeout in seconds.
 pub const FRAGMENT_REASSEMBLY_TIMEOUT_SECS: u64 = 30;
@@ -79,7 +79,7 @@ pub const RELAY_JITTER_MAX_MS: u64 = 100;
 pub const RATE_LIMIT_PACKETS_PER_SEC: u32 = 100;
 
 /// Rate limit: maximum tasks per minute per peer.
-pub const RATE_LIMIT_TASKS_PER_MIN: u32 = 10;
+pub const RATE_LIMIT_TASKS_PER_MIN: u32 = 120;
 
 /// Default local API port.
 pub const DEFAULT_API_PORT: u16 = 7432;
@@ -98,3 +98,18 @@ pub const MAX_DELEGATION_DEPTH: u8 = 5;
 
 /// CRC-16 polynomial (CRC-16/IBM).
 pub const CRC16_POLY: u16 = 0x8005;
+
+/// Default UDP port for LAN mesh discovery (multicast).
+pub const DEFAULT_MESH_PORT: u16 = 7433;
+
+/// IPv4 multicast group used for LAN discovery ("AMR" in the last octets).
+pub const MESH_MULTICAST_V4: [u8; 4] = [239, 77, 65, 82];
+
+/// Safe UDP datagram payload size (fits a 1500-byte Ethernet/Wi-Fi MTU).
+pub const UDP_MTU: usize = 1400;
+
+/// Maximum accepted clock skew for non-announce packets (seconds).
+pub const MAX_CLOCK_SKEW_SECS: u32 = 3600;
+
+/// Default timeout for remote tool calls (seconds).
+pub const DEFAULT_CALL_TIMEOUT_SECS: u64 = 60;

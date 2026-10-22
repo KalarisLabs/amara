@@ -17,6 +17,8 @@ thiserror = { workspace = true }
 lru = { workspace = true }
 dashmap = { workspace = true }
 rand = { workspace = true }
+ed25519-dalek = { workspace = true }
+chrono = { workspace = true }
 
 [dev-dependencies]
 uuid = { workspace = true }

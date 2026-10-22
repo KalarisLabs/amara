@@ -103,12 +103,8 @@ mod tests {
         let bob = NodeIdentity::generate("bob");
 
         // Simulate DH key exchange
-        let shared_alice = alice
-            .x25519_secret()
-            .diffie_hellman(&bob.x25519_public());
-        let shared_bob = bob
-            .x25519_secret()
-            .diffie_hellman(&alice.x25519_public());
+        let shared_alice = alice.x25519_secret().diffie_hellman(&bob.x25519_public());
+        let shared_bob = bob.x25519_secret().diffie_hellman(&alice.x25519_public());
 
         assert_eq!(shared_alice.as_bytes(), shared_bob.as_bytes());
 
@@ -141,12 +137,8 @@ mod tests {
         let id = NodeIdentity::generate("test");
         let shared = [42u8; 32];
 
-        let mut session = Session::from_shared_secret(
-            id.peer_id(),
-            PeerId::from_bytes([1; 8]),
-            &shared,
-            true,
-        );
+        let mut session =
+            Session::from_shared_secret(id.peer_id(), PeerId::from_bytes([1; 8]), &shared, true);
 
         let (nonce1, _) = session.encrypt(b"msg1").unwrap();
         let (nonce2, _) = session.encrypt(b"msg2").unwrap();

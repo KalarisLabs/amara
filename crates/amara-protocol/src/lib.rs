@@ -11,9 +11,14 @@
 
 pub mod codec;
 pub mod fragment;
+pub mod frame;
 pub mod header;
+pub mod messages;
 pub mod packet;
 
-pub use header::{PacketFlags, PacketHeader, PacketType};
-pub use packet::Packet;
+pub use codec::Announce;
 pub use fragment::{Fragment, FragmentHeader};
+pub use frame::{FrameAssembler, encode_frames};
+pub use header::{PacketFlags, PacketHeader, PacketType};
+pub use messages::{Call, Chat, Reply};
+pub use packet::Packet;

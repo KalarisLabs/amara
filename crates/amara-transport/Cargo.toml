@@ -12,6 +12,11 @@ async-trait = "0.1"
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
-
-[dev-dependencies]
+socket2 = { workspace = true, optional = true }
 rand = { workspace = true }
+
+
+[features]
+default = ["udp"]
+# Zero-config LAN transport (UDP multicast + unicast).
+udp = ["dep:socket2"]

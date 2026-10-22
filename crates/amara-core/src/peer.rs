@@ -11,6 +11,13 @@ use std::fmt;
 pub struct PeerId(pub [u8; 8]);
 
 impl PeerId {
+    /// Parse a PeerId from a 16-character hex string.
+    pub fn from_hex(s: &str) -> Option<Self> {
+        let bytes = hex::decode(s).ok()?;
+        let arr: [u8; 8] = bytes.try_into().ok()?;
+        Some(Self(arr))
+    }
+
     /// Create a PeerId from raw bytes.
     pub fn from_bytes(bytes: [u8; 8]) -> Self {
         Self(bytes)
@@ -154,6 +161,8 @@ pub struct PeerInfo {
     pub display_name: String,
     /// Ed25519 public key (32 bytes).
     pub public_key: [u8; 32],
+    /// X25519 public key (32 bytes) used for end-to-end encryption.
+    pub x25519_public: [u8; 32],
     /// Advertised capabilities.
     pub capabilities: Vec<String>,
     /// Estimated hop count.
@@ -177,6 +186,30 @@ pub struct PeerInfo {
 }
 
 impl PeerInfo {
+    /// Create a peer entry from its public keys. The PeerId is derived from the Ed25519 key.
+    pub fn new(
+        display_name: impl Into<String>,
+        public_key: [u8; 32],
+        x25519_public: [u8; 32],
+    ) -> Self {
+        Self {
+            peer_id: PeerId::from_public_key(&public_key),
+            display_name: display_name.into(),
+            public_key,
+            x25519_public,
+            capabilities: Vec::new(),
+            hop_count: 1,
+            last_seen: chrono::Utc::now(),
+            trust_level: TrustLevel::Seen,
+            transport: String::new(),
+            load_class: super::capability::LoadClass::Idle,
+            availability: super::capability::Availability::Online,
+            version: String::new(),
+            platform: Platform::Unknown,
+            next_hop: None,
+        }
+    }
+
     /// Check if this peer entry has expired.
     pub fn is_expired(&self, timeout: chrono::Duration) -> bool {
         chrono::Utc::now() - self.last_seen > timeout

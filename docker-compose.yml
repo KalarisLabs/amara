@@ -1,12 +1,13 @@
-version: '3.8'
-
 services:
-  amara-node:
+  amara:
     build: .
-    container_name: amara-node
-    # TUI requires a TTY and stdin
-    tty: true
-    stdin_open: true
-    # Use host network for proximity discovery (UDP broadcasts, etc.)
-    network_mode: "host"
+    container_name: amara
+    # Host networking is required for LAN multicast discovery (Linux hosts).
+    network_mode: host
+    command: ["up", "--name", "amara-docker", "--api", "127.0.0.1:7432"]
+    volumes:
+      - amara-data:/home/amara/.amara
     restart: unless-stopped
+
+volumes:
+  amara-data:

@@ -3,7 +3,7 @@
 //! When a message exceeds the transport MTU (default 500 bytes for BLE),
 //! the protocol layer splits it into fragments and reassembles at the destination.
 
-use amara_core::{AmaraError, Result, DEFAULT_FRAGMENT_PAYLOAD, MAX_FRAGMENTS};
+use amara_core::{AmaraError, MAX_FRAGMENTS, Result};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -117,12 +117,20 @@ pub struct Reassembler {
     max_concurrent: usize,
     /// Timeout for incomplete assemblies.
     timeout: Duration,
+    /// Bytes currently buffered across all assemblies.
+    buffered: usize,
+    /// Upper bound on buffered bytes (memory-exhaustion guard).
+    max_buffered: usize,
 }
+
+/// Default cap on bytes buffered by a [`Reassembler`] (64 MiB).
+pub const DEFAULT_MAX_BUFFERED: usize = 64 * 1024 * 1024;
 
 struct Assembly {
     total: u16,
     received: HashMap<u16, Vec<u8>>,
     started_at: Instant,
+    bytes: usize,
 }
 
 impl Reassembler {
@@ -131,7 +139,15 @@ impl Reassembler {
             assemblies: HashMap::new(),
             max_concurrent,
             timeout,
+            buffered: 0,
+            max_buffered: DEFAULT_MAX_BUFFERED,
         }
+    }
+
+    /// Override the buffered-bytes cap.
+    pub fn with_byte_limit(mut self, max_buffered: usize) -> Self {
+        self.max_buffered = max_buffered;
+        self
     }
 
     /// Add a fragment. Returns the reassembled message if complete.
@@ -142,13 +158,15 @@ impl Reassembler {
         let index = fragment.header.index;
         let total = fragment.header.total;
 
+        if self.buffered + fragment.payload.len() > self.max_buffered {
+            return Err(AmaraError::FragmentError("reassembly buffer full".into()));
+        }
+
         // Check if we already have this assembly
         if let Some(assembly) = self.assemblies.get_mut(&group_id) {
             // Verify consistency
             if assembly.total != total {
-                return Err(AmaraError::FragmentError(
-                    "fragment total mismatch".into(),
-                ));
+                return Err(AmaraError::FragmentError("fragment total mismatch".into()));
             }
 
             // Ignore duplicate fragments
@@ -156,11 +174,14 @@ impl Reassembler {
                 return Ok(None);
             }
 
+            self.buffered += fragment.payload.len();
+            assembly.bytes += fragment.payload.len();
             assembly.received.insert(index, fragment.payload);
 
             // Check if complete
             if assembly.received.len() == total as usize {
                 let assembly = self.assemblies.remove(&group_id).unwrap();
+                self.buffered -= assembly.bytes;
                 return Ok(Some(assemble(assembly)?));
             }
 
@@ -172,21 +193,22 @@ impl Reassembler {
             return Err(AmaraError::TooManyReassemblies(self.max_concurrent));
         }
 
-        let mut received = HashMap::new();
-        received.insert(index, fragment.payload);
-
         if total == 1 {
             // Single fragment, complete immediately
-            let data = received.remove(&0).unwrap_or_default();
-            return Ok(Some(data));
+            return Ok(Some(fragment.payload));
         }
 
+        let bytes = fragment.payload.len();
+        let mut received = HashMap::new();
+        received.insert(index, fragment.payload);
+        self.buffered += bytes;
         self.assemblies.insert(
             group_id,
             Assembly {
                 total,
                 received,
                 started_at: Instant::now(),
+                bytes,
             },
         );
 
@@ -196,8 +218,15 @@ impl Reassembler {
     /// Remove expired assemblies.
     fn cleanup_expired(&mut self) {
         let timeout = self.timeout;
-        self.assemblies
-            .retain(|_, a| a.started_at.elapsed() < timeout);
+        let mut freed = 0;
+        self.assemblies.retain(|_, a| {
+            let keep = a.started_at.elapsed() < timeout;
+            if !keep {
+                freed += a.bytes;
+            }
+            keep
+        });
+        self.buffered -= freed;
     }
 
     /// Number of in-progress assemblies.
@@ -210,9 +239,10 @@ impl Reassembler {
 fn assemble(assembly: Assembly) -> Result<Vec<u8>> {
     let mut data = Vec::new();
     for i in 0..assembly.total {
-        let fragment_data = assembly.received.get(&i).ok_or_else(|| {
-            AmaraError::FragmentError(format!("missing fragment {}", i))
-        })?;
+        let fragment_data = assembly
+            .received
+            .get(&i)
+            .ok_or_else(|| AmaraError::FragmentError(format!("missing fragment {}", i)))?;
         data.extend_from_slice(fragment_data);
     }
     Ok(data)
@@ -235,6 +265,7 @@ pub mod codec_utils {
     /// Decode a fragment from bytes.
     pub fn decode_fragment(data: &[u8]) -> Result<Fragment> {
         let header = FragmentHeader::decode(data)?;
+        // FragmentHeader::decode guarantees data.len() >= FragmentHeader::SIZE.
         let payload = data[FragmentHeader::SIZE..].to_vec();
         Ok(Fragment { header, payload })
     }
@@ -243,6 +274,7 @@ pub mod codec_utils {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use amara_core::DEFAULT_FRAGMENT_PAYLOAD;
 
     #[test]
     fn fragment_header_roundtrip() {
@@ -345,6 +377,21 @@ mod tests {
         };
         let result = reassembler.add_fragment(frag);
         assert!(matches!(result, Err(AmaraError::TooManyReassemblies(_))));
+    }
+
+    #[test]
+    fn byte_limit_enforced() {
+        let mut reassembler = Reassembler::new(64, Duration::from_secs(30)).with_byte_limit(100);
+        let frag = |i: u16| Fragment {
+            header: FragmentHeader {
+                group_id: [3; 8],
+                index: i,
+                total: 4,
+            },
+            payload: vec![0; 60],
+        };
+        assert!(reassembler.add_fragment(frag(0)).unwrap().is_none());
+        assert!(reassembler.add_fragment(frag(1)).is_err());
     }
 
     #[test]
