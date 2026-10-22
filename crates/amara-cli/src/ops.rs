@@ -1,11 +1,12 @@
 //! Operations shared by the MCP server, HTTP API, CLI and chat REPL, plus the
 //! compact text renderings handed to LLMs (designed to cost few tokens).
 
-use amara_agent::{Agent, InboxItem, PeerSummary, ToolSpec};
+use amara_agent::{Agent, Delivery, FileReceipt, InboxItem, PeerSummary, ToolSpec, TopicSample};
 use amara_core::DEFAULT_CALL_TIMEOUT_SECS;
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 use std::time::Duration;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 /// Default cap on characters of call output returned to an LLM.
@@ -45,7 +46,7 @@ pub fn meta_tools() -> Vec<MetaTool> {
         },
         MetaTool {
             name: "call",
-            description: "Call a tool on another agent. `to` = name/id, `@capability`, or omit to auto-pick the best agent offering `tool`. Use `card` first if you need the argument schema.",
+            description: "Call a tool on another agent. `to` = name/id, `@capability`, or omit to auto-pick the best agent offering `tool`. Use `card` first if you need the argument schema. Partial output streams as progress notifications when your client supports them.",
             schema: json!({"type":"object","required":["tool"],"properties":{
                 "to":{"type":"string"},
                 "tool":{"type":"string"},
@@ -69,11 +70,40 @@ pub fn meta_tools() -> Vec<MetaTool> {
         },
         MetaTool {
             name: "reply",
-            description: "Answer an incoming tool call from the inbox with `result` (any JSON) or `error`.",
+            description: "Answer an incoming tool call from the inbox with `result` (any JSON) or `error`. For calls marked streaming, `partial: true` sends `result` as progress and keeps the call open.",
             schema: json!({"type":"object","required":["call_id"],"properties":{
                 "call_id":{"type":"string"},
                 "result":{},
-                "error":{"type":"string"}}}),
+                "error":{"type":"string"},
+                "partial":{"type":"boolean"}}}),
+        },
+        MetaTool {
+            name: "topics",
+            description: "Live values robots, sensors and agents publish nearby (newest per sender). `topic` filters: exact, `rover1/*`, or `*`.",
+            schema: json!({"type":"object","properties":{
+                "topic":{"type":"string"}}}),
+        },
+        MetaTool {
+            name: "publish",
+            description: "Publish a value on a topic to everyone within `hops` (default 2), e.g. topic=\"lab/status\".",
+            schema: json!({"type":"object","required":["topic"],"properties":{
+                "topic":{"type":"string","pattern":"^[a-z0-9_.-]+(/[a-z0-9_.-]+)*$"},
+                "data":{},
+                "hops":{"type":"integer","minimum":1,"maximum":7}}}),
+        },
+        MetaTool {
+            name: "estop",
+            description: "EMERGENCY STOP: tell every robot in range (or only `to`) to halt immediately. Use whenever something looks unsafe.",
+            schema: json!({"type":"object","required":["reason"],"properties":{
+                "to":{"type":"string","description":"One robot (name/id); omit for all"},
+                "reason":{"type":"string"}}}),
+        },
+        MetaTool {
+            name: "send_file",
+            description: "Send a local file to an agent in range (end-to-end encrypted, verified by hash). It lands in their inbox.",
+            schema: json!({"type":"object","required":["to","path"],"properties":{
+                "to":{"type":"string"},
+                "path":{"type":"string","description":"Absolute path on this machine"}}}),
         },
     ]
 }
@@ -154,18 +184,29 @@ pub fn render_inbox(items: &[InboxItem]) -> String {
     items
         .iter()
         .map(|item| match item {
-            InboxItem::Message { from, from_name, text, channel, direct, .. } => {
+            InboxItem::Message { from, from_name, text, channel, direct, stored, .. } => {
                 let scope = match (direct, channel) {
                     (true, _) => "dm".to_string(),
                     (false, Some(c)) => c.clone(),
                     (false, None) => "public".to_string(),
                 };
-                format!("[msg {scope}] {from_name} ({}): {text}", short(from))
+                let late = if *stored { " delivered-late" } else { "" };
+                format!("[msg {scope}{late}] {from_name} ({}): {text}", short(from))
             }
-            InboxItem::Call { call_id, from, from_name, tool, args, expires_in, .. } => format!(
-                "[call] {from_name} ({}) → {tool} {} · reply(call_id=\"{call_id}\") within {expires_in}s",
+            InboxItem::Call { call_id, from, from_name, tool, args, expires_in, stream, .. } => format!(
+                "[call{}] {from_name} ({}) → {tool} {} · reply(call_id=\"{call_id}\") within {expires_in}s",
+                if *stream { " streaming" } else { "" },
                 short(from),
                 compact(args, 2000)
+            ),
+            InboxItem::File { from, from_name, name, path, size, .. } => format!(
+                "[file] {from_name} ({}) sent {name} ({}) → {path}",
+                short(from),
+                human_size(*size)
+            ),
+            InboxItem::Stop { from, from_name, reason, .. } => format!(
+                "[EMERGENCY STOP] {from_name} ({}): {reason}",
+                short(from)
             ),
         })
         .collect::<Vec<_>>()
@@ -179,6 +220,14 @@ pub fn compact(value: &Value, max: usize) -> String {
         other => serde_json::to_string(other).unwrap_or_default(),
     };
     truncate(text, max)
+}
+
+pub fn human_size(bytes: u64) -> String {
+    match bytes {
+        b if b < 1024 => format!("{b} B"),
+        b if b < 1024 * 1024 => format!("{:.1} KB", b as f64 / 1024.0),
+        b => format!("{:.1} MB", b as f64 / (1024.0 * 1024.0)),
+    }
 }
 
 pub fn truncate(text: String, max: usize) -> String {
@@ -212,13 +261,15 @@ pub async fn send(
     }
     match to.filter(|t| *t != "*" && !t.is_empty()) {
         Some(target) => {
-            let peer = agent.resolve(target)?;
-            agent.send_message(peer.peer_id, text).await?;
-            Ok(format!(
-                "sent encrypted DM to {} ({})",
-                peer.display_name,
-                short(&peer.peer_id.to_string())
-            ))
+            let (id, name) = agent.resolve_any(target)?;
+            let id_text = id.to_string();
+            Ok(match agent.send_message(id, text).await? {
+                Delivery::Sent => format!("sent encrypted DM to {name} ({})", short(&id_text)),
+                Delivery::Stored => format!(
+                    "{name} ({}) is out of range; DM stored and will be delivered when they are back (by you or any nearby agent)",
+                    short(&id_text)
+                ),
+            })
         }
         None => {
             agent
@@ -248,6 +299,18 @@ pub async fn call(
     args: Value,
     timeout_secs: Option<u64>,
 ) -> Result<CallOutcome> {
+    call_streaming(agent, to, tool, args, timeout_secs, None).await
+}
+
+/// Like [`call`], forwarding partial output to `chunks` when given.
+pub async fn call_streaming(
+    agent: &Agent,
+    to: Option<&str>,
+    tool: &str,
+    args: Value,
+    timeout_secs: Option<u64>,
+    chunks: Option<mpsc::UnboundedSender<Value>>,
+) -> Result<CallOutcome> {
     let peer = agent.resolve_target(to, tool)?;
     let timeout = Duration::from_secs(
         timeout_secs
@@ -255,7 +318,14 @@ pub async fn call(
             .clamp(1, 3600),
     );
     let args = if args.is_null() { json!({}) } else { args };
-    let reply = agent.call(peer.peer_id, tool, args, Some(timeout)).await?;
+    let reply = match chunks {
+        Some(tx) => {
+            agent
+                .call_streaming(peer.peer_id, tool, args, Some(timeout), tx)
+                .await?
+        }
+        None => agent.call(peer.peer_id, tool, args, Some(timeout)).await?,
+    };
     Ok(CallOutcome {
         ok: reply.ok,
         data: reply.data,
@@ -323,6 +393,14 @@ pub fn expose(agent: &Agent, args: &Value) -> Result<String> {
 pub fn reply(agent: &Agent, args: &Value) -> Result<String> {
     let id = str_arg(args, "call_id").ok_or_else(|| anyhow!("call_id is required"))?;
     let call_id = Uuid::parse_str(id).map_err(|_| anyhow!("call_id is not a valid id"))?;
+    if args
+        .get("partial")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        agent.reply_partial(call_id, args.get("result").cloned().unwrap_or(Value::Null))?;
+        return Ok("partial result sent; the call is still open".into());
+    }
     let outcome = match str_arg(args, "error") {
         Some(err) => Err(err.to_string()),
         None => Ok(args.get("result").cloned().unwrap_or(Value::Null)),
@@ -341,8 +419,78 @@ pub async fn inbox(agent: &Agent, wait_secs: u64, max: usize) -> Vec<InboxItem> 
         .await
 }
 
+pub fn render_topics(samples: &[TopicSample]) -> String {
+    if samples.is_empty() {
+        return "no topics yet".into();
+    }
+    samples
+        .iter()
+        .map(|s| {
+            format!(
+                "{} · {} ({}) #{} {}s ago: {}",
+                s.topic,
+                s.from_name,
+                short(&s.from),
+                s.seq,
+                s.age_ms / 1000,
+                compact(&s.data, 500)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub async fn publish(agent: &Agent, topic: &str, data: Value, hops: Option<u8>) -> Result<String> {
+    let seq = agent.publish(topic, data, hops).await?;
+    Ok(format!("published {topic} #{seq}"))
+}
+
+pub async fn estop(agent: &Agent, to: Option<&str>, reason: &str) -> Result<String> {
+    let target = match to {
+        Some(t) => Some(agent.resolve(t)?),
+        None => None,
+    };
+    agent
+        .estop(target.as_ref().map(|p| p.peer_id), reason)
+        .await?;
+    Ok(match target {
+        Some(p) => format!("emergency stop sent to {}", p.display_name),
+        None => format!(
+            "emergency stop broadcast to every robot in range ({} agent(s))",
+            agent.peers().len()
+        ),
+    })
+}
+
+/// Send a file from this machine to a peer in range.
+pub async fn send_file(agent: &Agent, to: &str, path: &str) -> Result<FileReceipt> {
+    let peer = agent.resolve(to)?;
+    let path = std::path::Path::new(path);
+    Ok(agent.send_file(peer.peer_id, path).await?)
+}
+
+pub fn render_receipt(to: &str, r: &FileReceipt) -> String {
+    format!(
+        "sent {} ({}) to {to} in {}ms, verified{}",
+        r.name,
+        human_size(r.size),
+        r.ms,
+        if r.resent > 0 {
+            format!(" ({} chunk(s) resent)", r.resent)
+        } else {
+            String::new()
+        }
+    )
+}
+
 /// Execute a meta tool by name with JSON arguments, returning LLM-friendly text.
-pub async fn run_text(agent: &Agent, name: &str, args: &Value) -> Result<String> {
+/// A `call` forwards partial output to `progress` when given.
+pub async fn run_text_streaming(
+    agent: &Agent,
+    name: &str,
+    args: &Value,
+    progress: Option<mpsc::UnboundedSender<Value>>,
+) -> Result<String> {
     match name {
         "peers" => Ok(render_peers(
             agent,
@@ -369,12 +517,13 @@ pub async fn run_text(agent: &Agent, name: &str, args: &Value) -> Result<String>
                 .and_then(Value::as_u64)
                 .map(|m| m as usize)
                 .unwrap_or(DEFAULT_MAX_CHARS);
-            let out = call(
+            let out = call_streaming(
                 agent,
                 str_arg(args, "to"),
                 tool,
                 args.get("args").cloned().unwrap_or(Value::Null),
                 args.get("timeout").and_then(Value::as_u64),
+                progress,
             )
             .await?;
             let body = compact(&out.data, max);
@@ -398,6 +547,34 @@ pub async fn run_text(agent: &Agent, name: &str, args: &Value) -> Result<String>
         )),
         "expose" => expose(agent, args),
         "reply" => reply(agent, args),
+        "topics" => Ok(render_topics(&agent.topics(str_arg(args, "topic")))),
+        "publish" => {
+            let topic = str_arg(args, "topic").ok_or_else(|| anyhow!("topic is required"))?;
+            let hops = args
+                .get("hops")
+                .and_then(Value::as_u64)
+                .map(|h| h.min(7) as u8);
+            publish(
+                agent,
+                topic,
+                args.get("data").cloned().unwrap_or(Value::Null),
+                hops,
+            )
+            .await
+        }
+        "estop" => {
+            estop(
+                agent,
+                str_arg(args, "to"),
+                str_arg(args, "reason").unwrap_or("emergency stop"),
+            )
+            .await
+        }
+        "send_file" => {
+            let to = str_arg(args, "to").ok_or_else(|| anyhow!("to is required"))?;
+            let path = str_arg(args, "path").ok_or_else(|| anyhow!("path is required"))?;
+            Ok(render_receipt(to, &send_file(agent, to, path).await?))
+        }
         other => bail!("unknown tool '{other}'"),
     }
 }
@@ -438,6 +615,7 @@ mod tests {
                 channel: None,
                 direct: true,
                 at: 0,
+                stored: true,
             },
             InboxItem::Call {
                 call_id: id,
@@ -447,9 +625,20 @@ mod tests {
                 args: json!({"x":1}),
                 at: 0,
                 expires_in: 300,
+                stream: false,
+            },
+            InboxItem::File {
+                from: "fedcba9876543210".into(),
+                from_name: "orion".into(),
+                name: "a.png".into(),
+                path: "/tmp/a.png".into(),
+                size: 2048,
+                hash: String::new(),
+                at: 0,
             },
         ]);
-        assert!(text.contains("[msg dm] nova (01234567): hi"));
+        assert!(text.contains("[msg dm delivered-late] nova (01234567): hi"));
+        assert!(text.contains("[file] orion (fedcba98) sent a.png (2.0 KB) → /tmp/a.png"));
         assert!(text.contains(&format!("reply(call_id=\"{id}\")")));
         assert_eq!(render_inbox(&[]), "inbox empty");
     }

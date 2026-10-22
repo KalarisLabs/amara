@@ -6,6 +6,9 @@
     print(mesh.call("summarize", {"text": "..."}))          # auto-routed
     mesh.send("hello everyone")                             # public broadcast
     mesh.serve("review", "Review a diff", lambda args, call: {"verdict": "LGTM"})
+    for part in mesh.call_stream("generate", {"prompt": "..."}):   # streaming output
+        print(part)
+    mesh.send_file("nova", path="report.pdf")                # verified file transfer
 
 Function calling with any LLM (OpenAI, Anthropic, ...):
 
@@ -24,7 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 __all__ = ["Amara", "AmaraError"]
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 
 class AmaraError(RuntimeError):
@@ -99,18 +102,84 @@ class Amara:
             raise AmaraError((out.get("data") or {}).get("error", "remote tool failed"))
         return out.get("data")
 
+    def call_stream(self, tool: str, args: Optional[dict] = None, to: Optional[str] = None,
+                    timeout: Optional[int] = None) -> Iterator[Dict[str, Any]]:
+        """Call `tool` and yield its output as it is produced.
+
+        Yields {"chunk": data} for each partial result, then one final
+        {"result": data, "ok": bool, "ms": int, "peer": {...}}.
+        """
+        body = {"to": to, "tool": tool, "args": args or {}, "timeout_secs": timeout, "stream": True}
+        for event in self._sse("POST", "/v1/call", body):
+            if event["event"] == "chunk":
+                yield {"chunk": event["data"]}
+            elif event["event"] == "result":
+                out = event["data"]
+                yield {"result": out.get("data"), "ok": out.get("ok"), "ms": out.get("ms"), "peer": out.get("peer")}
+            elif event["event"] == "error":
+                raise AmaraError(event["data"].get("error", "call failed"))
+
+    def send_file(self, to: str, path: Optional[str] = None, data: Optional[bytes] = None,
+                  name: Optional[str] = None) -> Dict[str, Any]:
+        """Send a file to an agent in range, from a local `path` or from `data` bytes."""
+        if path is not None:
+            body: Dict[str, Any] = {"to": to, "path": str(Path(path).resolve())}
+        elif data is not None:
+            import base64
+            body = {"to": to, "name": name or "file", "data_base64": base64.b64encode(data).decode()}
+        else:
+            raise AmaraError("give path= or data=")
+        return self._request("POST", "/v1/files", body)["receipt"]
+
+    def files(self) -> List[Dict[str, Any]]:
+        """Files other agents have sent to this node, newest first."""
+        return self._request("GET", "/v1/files")
+
+    def download(self, name: str) -> bytes:
+        req = urllib.request.Request(self.url + "/v1/files/" + urllib.parse.quote(name, safe=""),
+                                     headers={"Authorization": f"Bearer {self.token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            raise AmaraError(f"download failed: HTTP {e.code}") from None
+
+    # ── topics and robots ────────────────────────────────────────────────────
+    def publish(self, topic: str, data: Any = None, hops: Optional[int] = None) -> int:
+        """Publish a value on a topic (e.g. "rover1/battery") to agents within `hops` (default 2)."""
+        return self._request("POST", "/v1/publish", {"topic": topic, "data": data, "hops": hops})["seq"]
+
+    def topics(self, pattern: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Newest value per (sender, topic). `pattern`: exact, "rover1/*" or "*"."""
+        q = f"?topic={urllib.parse.quote(pattern)}" if pattern else ""
+        return self._request("GET", "/v1/topics" + q)
+
+    def watch(self, pattern: str = "*") -> Iterator[Dict[str, Any]]:
+        """Yield samples matching `pattern` as they arrive."""
+        for event in self._sse("GET", f"/v1/topics/watch?topic={urllib.parse.quote(pattern)}"):
+            if event["event"] == "sample":
+                yield event["data"]
+
+    def estop(self, reason: str = "emergency stop", to: Optional[str] = None) -> str:
+        """EMERGENCY STOP every robot in range, or only `to`."""
+        return self._request("POST", "/v1/estop", {"to": to, "reason": reason})["status"]
+
     def card(self, peer: str) -> Dict[str, Any]:
         return self._request("GET", "/v1/card/" + urllib.parse.quote(peer, safe=""))
 
     def inbox(self, wait: int = 0, max: int = 50) -> List[Dict[str, Any]]:
         return self._request("GET", f"/v1/inbox?wait={int(wait)}&max={int(max)}")
 
-    def reply(self, call_id: str, result: Any = None, error: Optional[str] = None) -> None:
+    def reply(self, call_id: str, result: Any = None, error: Optional[str] = None, partial: bool = False) -> None:
+        """Answer a call. `partial=True` streams `result` as progress and keeps the call open
+        (only for calls whose inbox item has "stream": true)."""
         body: Dict[str, Any] = {"call_id": call_id}
         if error is not None:
             body["error"] = error
         else:
             body["result"] = result
+        if partial:
+            body["partial"] = True
         self._request("POST", "/v1/reply", body)
 
     def expose(self, name: str, description: str, input_schema: Optional[dict] = None) -> None:
@@ -121,8 +190,21 @@ class Amara:
 
     def events(self) -> Iterator[Dict[str, Any]]:
         """Yield live events: {"event": "inbox"|"mesh", "data": {...}} (does not consume the inbox)."""
-        req = urllib.request.Request(self.url + "/v1/events", headers={"Authorization": f"Bearer {self.token}"})
-        with urllib.request.urlopen(req, timeout=None) as resp:
+        return self._sse("GET", "/v1/events")
+
+    def _sse(self, method: str, path: str, body: Any = None) -> Iterator[Dict[str, Any]]:
+        data_bytes = None if body is None else json.dumps(body).encode()
+        req = urllib.request.Request(self.url + path, data=data_bytes, method=method, headers={
+            "Authorization": f"Bearer {self.token}", "Content-Type": "application/json"})
+        try:
+            resp = urllib.request.urlopen(req, timeout=None)
+        except urllib.error.HTTPError as e:
+            try:
+                msg = json.loads(e.read()).get("error", str(e))
+            except ValueError:
+                msg = str(e)
+            raise AmaraError(msg) from None
+        with resp:
             event, data = "message", []
             for raw in resp:
                 line = raw.decode().rstrip("\r\n")
@@ -179,8 +261,16 @@ class Amara:
                     self.expose(args["name"], args.get("description", ""), args.get("input_schema"))
                     result = "exposed"
             elif name == "reply":
-                self.reply(args["call_id"], args.get("result"), args.get("error"))
+                self.reply(args["call_id"], args.get("result"), args.get("error"), bool(args.get("partial")))
                 result = "reply sent"
+            elif name == "send_file":
+                result = self.send_file(args["to"], path=args["path"])
+            elif name == "topics":
+                result = self.topics(args.get("topic"))
+            elif name == "publish":
+                result = f"published #{self.publish(args['topic'], args.get('data'), args.get('hops'))}"
+            elif name == "estop":
+                result = self.estop(args.get("reason", "emergency stop"), args.get("to"))
             else:
                 return f"error: unknown tool {name}"
         except (AmaraError, KeyError) as e:

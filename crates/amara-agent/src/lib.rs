@@ -31,8 +31,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub use amara_runtime::{
-    AgentRuntime, CallContext, CommandTool, FnTool, InboxItem, PeerSummary, RuntimeConfig, Tool,
-    ToolResult, ToolSpec,
+    AcceptFiles, AgentRuntime, CallContext, CommandTool, Delivery, ESTOP_TOPIC, EstopFrom,
+    EstopPolicy, FilePolicy, FileReceipt, FnTool, InboxItem, PeerSummary, RuntimeConfig,
+    StreamSink, Tool, ToolResult, ToolSpec, TopicSample,
 };
 #[cfg(feature = "udp")]
 pub use amara_transport::UdpConfig;
@@ -45,10 +46,8 @@ pub fn amara_home() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".amara"))
 }
 
-/// Default identity file for an agent name.
-pub fn identity_path(name: &str) -> PathBuf {
-    let safe: String = name
-        .chars()
+fn safe_name(name: &str) -> String {
+    name.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
                 c
@@ -56,8 +55,14 @@ pub fn identity_path(name: &str) -> PathBuf {
                 '_'
             }
         })
-        .collect();
-    amara_home().join("identities").join(format!("{safe}.json"))
+        .collect()
+}
+
+/// Default identity file for an agent name.
+pub fn identity_path(name: &str) -> PathBuf {
+    amara_home()
+        .join("identities")
+        .join(format!("{}.json", safe_name(name)))
 }
 
 /// Builder for [`Agent`].
@@ -148,6 +153,38 @@ impl AgentBuilder {
         self
     }
 
+    /// Packets accepted per second from any one source (default 200).
+    pub fn packets_per_sec(mut self, n: u32) -> Self {
+        self.mesh.packets_per_sec = n;
+        self
+    }
+
+    /// Hold packets for out-of-range peers on behalf of others (default on).
+    pub fn custody(mut self, enabled: bool) -> Self {
+        self.mesh.custody = enabled;
+        self
+    }
+
+    /// Persist known peers and held packets here, so store-and-forward survives
+    /// restarts. Defaults to `~/.amara/state/<name>` for non-ephemeral agents.
+    pub fn state_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.mesh.state_dir = Some(dir.into());
+        self
+    }
+
+    /// Who may trigger this agent's emergency stop, and the program it runs.
+    pub fn estop(mut self, policy: EstopPolicy) -> Self {
+        self.runtime.estop = policy;
+        self
+    }
+
+    /// Who may send this agent files, the size limit, and where files land
+    /// (default `~/.amara/received/<name>` for non-ephemeral agents).
+    pub fn files(mut self, policy: FilePolicy) -> Self {
+        self.runtime.files = policy;
+        self
+    }
+
     /// Join the mesh.
     pub async fn start(self) -> Result<Agent> {
         let identity = match (self.identity, self.ephemeral) {
@@ -161,7 +198,19 @@ impl AgentBuilder {
             }
         };
         let peer_id = identity.peer_id();
-        let mesh = Arc::new(MeshEngine::new(identity, self.mesh));
+        let mut mesh_config = self.mesh;
+        let mut runtime_config = self.runtime;
+        if !self.ephemeral {
+            let dir = safe_name(identity.display_name());
+            mesh_config
+                .state_dir
+                .get_or_insert_with(|| amara_home().join("state").join(&dir));
+            runtime_config
+                .files
+                .dir
+                .get_or_insert_with(|| amara_home().join("received").join(&dir));
+        }
+        let mesh = Arc::new(MeshEngine::new(identity, mesh_config));
 
         #[cfg(feature = "udp")]
         let lan = match (self.lan, self.transports.is_empty()) {
@@ -182,7 +231,7 @@ impl AgentBuilder {
             mesh.add_transport(t).await;
         }
 
-        let runtime = AgentRuntime::new(mesh, self.runtime);
+        let runtime = AgentRuntime::new(mesh, runtime_config);
         for tool in self.tools {
             runtime.register_tool(tool)?;
         }

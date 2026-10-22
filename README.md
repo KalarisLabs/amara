@@ -11,8 +11,8 @@
 </p>
 
 <p align="center">
-  <b>Your AI agents can find each other, talk, and call each other's tools: directly, over the local network,<br>
-  with no servers, no accounts, no API keys, and end-to-end encryption.</b>
+  <b>Your AI agents (and robots) can find each other, talk, and call each other's tools: directly, over Wi-Fi<br>
+  or Bluetooth, with no servers, no accounts, no API keys, and end-to-end encryption.</b>
 </p>
 
 ---
@@ -28,18 +28,22 @@ $ amara call - ocr '{"png_base64":"…"}'      # "-" = auto-route to whoever off
 ```
 
 Claude on your laptop asks Codex on your desktop to review a diff. A Raspberry Pi exposes its sensors as a
-tool. A local Llama box serves `summarize` to every agent in the office. The traffic hops device-to-device and is
-sealed so that only the recipient can read it, **even when it is relayed through other agents.**
+tool. A local Llama box serves `summarize` to every agent in the office. A warehouse robot streams its battery level
+to every agent nearby, and any of them can hit the **emergency stop**. The traffic hops device-to-device, over Wi-Fi
+or Bluetooth, and is sealed so that only the recipient can read it, **even when it is relayed through other agents.**
 
 ## Why AMARA
 
 <table>
-<tr><td>🛰️ <b>Serverless mesh</b></td><td>Zero-config LAN discovery (multicast), multi-hop relay with learned routes, store-nothing relays. VPN/cloud peers with one flag.</td></tr>
+<tr><td>🛰️ <b>Serverless mesh</b></td><td>Zero-config LAN discovery (multicast) and Bluetooth LE, multi-hop relay with learned routes. VPN/cloud peers with one flag. Works with no network at all.</td></tr>
+<tr><td>📮 <b>Offline delivery</b></td><td>Message an agent that is out of range: the mesh holds the sealed message and hands it over when they are back, even if you have left.</td></tr>
+<tr><td>🤖 <b>Built for robots too</b></td><td>Live topics (ROS-style telemetry with no broker), streaming tool calls (like ROS actions), and a signed, mesh-wide <b>emergency stop</b>.</td></tr>
+<tr><td>🌊 <b>Streaming and files</b></td><td>Tools stream partial output as they work. Files move end-to-end encrypted, repaired on lossy links and verified with BLAKE3.</td></tr>
 <tr><td>🔐 <b>Secure by construction</b></td><td>Every packet is Ed25519-signed. Calls and DMs are sealed end to end (ephemeral X25519 + ChaCha20-Poly1305). Self-certifying identities. Rate limits and trust lists.</td></tr>
 <tr><td>🧰 <b>Tool calling between agents</b></td><td>Call a peer by name, by <code>@capability</code>, or just by tool name and let the mesh pick the best agent (fewest hops, lowest load).</td></tr>
 <tr><td>🤝 <b>AI ↔ AI, both directions</b></td><td>An AI that only speaks MCP can still <i>serve</i> tools: <code>expose</code> → calls land in its <code>inbox</code> → it <code>reply</code>s.</td></tr>
 <tr><td>🪶 <b>Token-efficient</b></td><td>Compact text outputs, schemas fetched lazily (<code>card</code>), truncation controls. Your context window stays for thinking.</td></tr>
-<tr><td>🔌 <b>Plugs into everything</b></td><td>MCP (Claude Code/Desktop, Codex, Cursor, Windsurf, VS Code, Gemini CLI), HTTP + SSE, Python, JS, Rust, OpenAI/Anthropic function schemas, command-line tools.</td></tr>
+<tr><td>🔌 <b>Plugs into everything</b></td><td>MCP (Claude Code/Desktop, Codex, Cursor, Windsurf, VS Code, Gemini CLI), HTTP + SSE, Python, JS, Rust, OpenAI/Anthropic function schemas, command-line tools, a desktop tray app and a phone dashboard.</td></tr>
 <tr><td>📦 <b>One small binary</b></td><td>Rust, no runtime dependencies. Linux, macOS, Windows, Raspberry Pi.</td></tr>
 </table>
 
@@ -58,7 +62,8 @@ cargo install --git https://github.com/KalarisLabs/amara amara-cli
 
 ```bash
 amara doctor      # check this machine can join the mesh
-amara simulate    # 3-agent demo in one process, no network needed
+amara simulate    # agents + a robot in one process: calls, streaming, topics, offline delivery, files, e-stop
+amara bench       # latency and throughput of the full stack on this machine
 ```
 
 ## 60-second quick start
@@ -69,8 +74,8 @@ amara simulate    # 3-agent demo in one process, no network needed
 amara setup claude-code --write     # also: claude-desktop · codex · cursor · windsurf · vscode · gemini
 ```
 
-Restart the app and ask it: *"Who's on the AMARA mesh?"* It now has seven tools:
-`peers` · `call` · `card` · `send` · `inbox` · `expose` · `reply`.
+Restart the app and ask it: *"Who's on the AMARA mesh?"* It now has eleven tools:
+`peers` · `call` · `card` · `send` · `inbox` · `expose` · `reply` · `send_file` · `topics` · `publish` · `estop`.
 
 **2 · Do the same on another machine** on the same Wi-Fi/LAN, or add a second app on the same machine.
 Agents discover each other within a second.
@@ -86,10 +91,12 @@ Claude ──call(review)──► mesh ──► Codex inbox ──reply──�
         sealed end-to-end; relays see only routing headers
 ```
 
-**Chat like BitChat, from the terminal:**
+**Chat like BitChat, from the terminal, the menu bar, or your phone:**
 
 ```bash
-amara                      # interactive: broadcast, /msg, /call, /peers, /card
+amara                      # interactive: broadcast, /msg, /call, /file, /topics, /stop
+amara tray                 # desktop app (build with --features tray): node + dashboard in the menu bar
+amara up --lan && amara pair   # QR code: open the dashboard on your phone
 ```
 
 ## How it works
@@ -117,12 +124,12 @@ flowchart LR
 | Layer | What it does |
 |---|---|
 | **Interfaces** | MCP server · HTTP API + SSE · CLI · chat · Python/JS/Rust SDKs |
-| **Agent runtime** | tools (Rust fn · local command · AI-served inbox), calls, replies, messages, trust policy, rate limits |
+| **Agent runtime** | tools (Rust fn · local command · AI-served inbox), streaming calls, messages, topics, files, e-stop, trust policy, rate limits |
 | **Protocol** | 42-byte binary header, Ed25519 signatures, sealed boxes, compact JSON bodies, LZ4 |
-| **Mesh** | self-certifying announces, dedup, TTL, jittered flooding, learned next-hop routes, per-hop fragmentation |
-| **Transport** | UDP LAN (multicast discovery + unicast) · in-process simulator · BLE (planned) |
+| **Mesh** | self-certifying announces, dedup, TTL, jittered flooding, learned next-hop routes, per-hop fragmentation, store and forward |
+| **Transport** | UDP LAN (multicast discovery + unicast) · Bluetooth LE (central + peripheral) · in-process simulators |
 
-Read more: [Architecture](docs/ARCHITECTURE.md) · [Wire protocol](docs/PROTOCOL.md) · [Security model](docs/SECURITY.md)
+Read more: [Architecture](docs/ARCHITECTURE.md) · [Wire protocol](docs/PROTOCOL.md) · [Security model](docs/SECURITY.md) · [Robots](docs/ROBOTICS.md)
 
 ## What's new in the protocol
 
@@ -133,7 +140,10 @@ Read more: [Architecture](docs/ARCHITECTURE.md) · [Wire protocol](docs/PROTOCOL
 | **Self-certifying announces** | PeerId = BLAKE3(public key). Trust bootstraps with zero pairing and zero PKI, and keys are pinned on first sight. |
 | **Stateless sealed boxes** | A fresh ephemeral key for every message: nothing to handshake, nothing to desync on a lossy mesh. |
 | **Lazy schemas** | Announces carry only tool names, and full JSON schemas are fetched on demand. Tiny beacons, lean LLM context. |
-| **Per-hop framing** | Every link fragments to its own MTU, below the signature layer, so the same packets ride UDP today and BLE tomorrow. |
+| **Per-hop framing** | Every link fragments to its own MTU, below the signature layer, so the same packets ride UDP and BLE, and relay between them. |
+| **Custody without trust** | Offline messages are wrapped in a self-certifying envelope. Any agent can carry them; none can read or forge them. |
+| **Latest-value topics** | Every node caches the newest value per topic, so an agent that walks into the room knows the robot's state at once. |
+| **Fail-safe stop** | `estop` is a signed broadcast with the mesh's full radius. Robots choose who may stop them (anyone, by default). |
 
 ## Use it from anything
 
@@ -220,12 +230,16 @@ args = ["ocr.py"]        # JSON args on stdin → result on stdout
 | `amara up` | Run a node with the HTTP API |
 | `amara mcp` | MCP server over stdio |
 | `amara setup <client> [--write]` | Wire up Claude Code/Desktop, Codex, Cursor, Windsurf, VS Code, Gemini |
-| `amara peers` · `send` · `call` · `card` · `inbox` | Talk to the running node |
+| `amara peers` · `send` · `call [--stream]` · `card` · `inbox` | Talk to the running node |
+| `amara send-file <agent> <path>` | Encrypted, verified file transfer |
+| `amara topics [pattern] [--watch]` · `publish <topic> <json>` | Live telemetry |
+| `amara stop [robot]` | Emergency stop for every robot in range (or one) |
+| `amara tray` · `amara pair` | Desktop tray app · phone dashboard via QR code |
 | `amara schema [openai\|anthropic\|mcp]` | Function-calling definitions |
-| `amara simulate` | Three-agent demo, in process |
+| `amara simulate` · `amara bench` | Demo of every feature, in process · performance numbers |
 | `amara doctor` · `amara id` | Diagnostics and identity |
 
-Global flags: `--name`, `--tag`, `--port`, `--peer host:port` (repeatable), `--no-multicast`, `-v`.
+Global flags: `--name`, `--tag`, `--port`, `--peer host:port` (repeatable), `--no-multicast`, `--ble`, `-v`.
 
 ## Configuration
 
@@ -239,10 +253,23 @@ peers = ["100.64.0.7:7433"]      # static peers for VPNs/clouds (multicast cover
 [api]
 bind = "127.0.0.1:7432"
 
+ble = true                       # also mesh over Bluetooth LE (build with --features ble)
+
 [security]
 require_trusted = false
 trusted = ["9f3e21aa5c0d4b11"]   # PeerIds allowed when require_trusted = true
 blocked = []
+
+[store]
+custody = true                   # carry sealed messages for out-of-range agents
+
+[files]
+accept = "anyone"                # or "trusted" / "off"
+max_mb = 32
+
+[robot]
+estop_from = "anyone"            # who may stop this robot: anyone / trusted / off
+estop_command = ["python", "halt.py"]   # runs on every accepted stop
 ```
 
 ## Security at a glance
@@ -258,10 +285,13 @@ blocked = []
 - [x] Signed, sealed, multi-hop mesh with learned routes
 - [x] MCP server · HTTP API · Python / JS / Rust SDKs
 - [x] Capability anycast, inbox-served tools, command tools
-- [ ] BLE transport (phones, Pi, offline field use)
-- [ ] Store-and-forward for offline peers
-- [ ] Streaming results and file transfer
-- [ ] Desktop tray app and mobile clients
+- [x] BLE transport (phones, Pi, offline field use)
+- [x] Store-and-forward for offline peers
+- [x] Streaming results and file transfer
+- [x] Desktop tray app and phone dashboard
+- [x] Robots: live topics, streaming actions, mesh-wide emergency stop
+- [ ] Native iOS/Android apps (the BLE GATT profile and `BleRadio` trait are ready for them)
+- [ ] ROS 2 bridge package
 
 ## Contributing
 

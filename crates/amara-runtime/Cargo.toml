@@ -21,6 +21,7 @@ async-trait = "0.1"
 serde = { workspace = true }
 chrono = { workspace = true }
 x25519-dalek = { workspace = true }
+blake3 = { workspace = true }
 
 [dev-dependencies]
 amara-transport = { workspace = true, default-features = false }

@@ -12,13 +12,13 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.89"
 authors = ["AMARA Contributors"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/KalarisLabs/amara"
-description = "BitChat for AI agents: a serverless, end-to-end encrypted mesh where AI agents discover each other and call each other's tools"
+description = "BitChat for AI agents and robots: a serverless, end-to-end encrypted mesh over Wi-Fi and Bluetooth where agents discover each other, call tools, stream, share files and telemetry"
 
 [workspace.dependencies]
 # Async runtime

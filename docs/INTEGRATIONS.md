@@ -36,9 +36,16 @@ Leave out `--write` to see exactly what would change. Each client gets its own m
 | `call` | Run a tool on another agent. `to` = name, id prefix, `@tag`, or omit to auto-route by tool name. |
 | `card` | An agent's tools with full JSON schemas (fetched on demand, so they don't fill your context). |
 | `send` | DM (end-to-end encrypted) with `to`, or a public broadcast (optional `channel`). |
-| `inbox` | Messages and incoming calls. `wait` long-polls for up to 300 s. |
+| `inbox` | Messages, incoming calls, received files and emergency stops. `wait` long-polls for up to 300 s. |
 | `expose` | Offer a tool that **you** (the AI) answer. Calls arrive in `inbox`. |
-| `reply` | Answer an incoming call with `result` or `error`. |
+| `reply` | Answer an incoming call with `result` or `error`; `partial: true` streams progress first. |
+| `send_file` | Send a local file to an agent in range (sealed, verified). |
+| `topics` | Live values robots and sensors publish nearby (`rover1/*`). |
+| `publish` | Publish a value on a topic. |
+| `estop` | Emergency stop for every robot in range (or one). |
+
+`call` streams: when the client sends a `progressToken`, partial output arrives as `notifications/progress`.
+DMs to agents that are out of range are stored and delivered when they return.
 
 Outputs are compact text, so a peer list costs tens of tokens rather than hundreds.
 
@@ -72,7 +79,7 @@ Start a node: `amara up` (default `127.0.0.1:7432`). Every `/v1` route needs
 | GET | `/v1/status` | | `{name, id, version, peers, tools, inbox}` |
 | GET | `/v1/peers` | `?capability=` | `[{id, name, hops, capabilities, platform, load, trust, last_seen_secs}]` |
 | POST | `/v1/send` | `{to?, text, channel?}` | `{ok, status}` |
-| POST | `/v1/call` | `{to?, tool, args?, timeout_secs?}` | `{ok, data, ms, peer:{name,id}}` |
+| POST | `/v1/call` | `{to?, tool, args?, timeout_secs?, stream?}` | `{ok, data, ms, peer:{name,id}}`; with `stream: true` an SSE stream of `chunk` events then `result` |
 | GET | `/v1/card/{peer}` | | agent card |
 | GET | `/v1/inbox` | `?wait=secs&max=n` | `[{kind:"message"…} \| {kind:"call", call_id…}]` (consumes) |
 | POST | `/v1/reply` | `{call_id, result? \| error?}` | `{ok}` |
@@ -81,6 +88,14 @@ Start a node: `amara up` (default `127.0.0.1:7432`). Every `/v1` route needs
 | DELETE | `/v1/tools/{name}` | | stop serving it |
 | GET | `/v1/schema` | `?format=openai\|anthropic\|mcp` | function-calling definitions |
 | GET | `/v1/events` | | SSE stream: `inbox` and `mesh` events (non-consuming) |
+| POST | `/v1/files` | `{to, path}` or `{to, name, data_base64}` | `{ok, receipt:{name,size,hash,ms,resent}}` |
+| GET | `/v1/files` | | files received, newest first |
+| GET | `/v1/files/{name}` | | download a received file |
+| GET | `/v1/topics` | `?topic=rover1/*` | newest value per (sender, topic) |
+| GET | `/v1/topics/watch` | `?topic=` | SSE stream of `sample` events |
+| POST | `/v1/publish` | `{topic, data, hops?}` | `{ok, seq}` |
+| POST | `/v1/estop` | `{to?, reason}` | `{ok, status}` |
+| GET | `/ui` | (no auth; token in the URL fragment) | dashboard for desktop and phones |
 
 ```bash
 TOKEN=$(cat ~/.amara/api.token)
@@ -90,6 +105,22 @@ curl -s -H "Authorization: Bearer $TOKEN" -d '{"tool":"summarize","args":{"text"
 ```
 
 Errors are `{"error": "…"}` with status 400, 401, 404 (unknown peer/capability) or 504 (timeout).
+
+---
+
+### Dashboard and phones
+
+`/ui` is a small web app: nearby agents, messages, streaming tool calls, file send and download. It reads the API
+token from the URL fragment (`/ui#token=…`), which browsers never send to servers, then keeps it in local storage.
+
+```bash
+amara up --lan     # serve the API to your LAN (token still required)
+amara pair         # QR code with the dashboard link: scan it with your phone
+amara tray         # desktop app: the same dashboard from the menu bar (build with --features tray)
+```
+
+Over `--lan` the API is plain HTTP: anyone on the Wi-Fi who sees the link can take the token. Use it on networks you
+trust, or put a TLS proxy in front.
 
 ---
 

@@ -76,7 +76,7 @@ pub const RELAY_JITTER_MIN_MS: u64 = 10;
 pub const RELAY_JITTER_MAX_MS: u64 = 100;
 
 /// Rate limit: maximum packets per second per peer.
-pub const RATE_LIMIT_PACKETS_PER_SEC: u32 = 100;
+pub const RATE_LIMIT_PACKETS_PER_SEC: u32 = 200;
 
 /// Rate limit: maximum tasks per minute per peer.
 pub const RATE_LIMIT_TASKS_PER_MIN: u32 = 120;

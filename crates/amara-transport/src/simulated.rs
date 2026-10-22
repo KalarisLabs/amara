@@ -43,7 +43,7 @@ impl SimulatorHub {
 
     /// Register a new node with the hub.
     pub async fn register(&self, peer_id: PeerId) -> mpsc::Receiver<TransportEvent> {
-        let (tx, rx) = mpsc::channel(1024);
+        let (tx, rx) = mpsc::channel(8192);
         self.nodes.lock().await.insert(peer_id, tx);
         rx
     }
@@ -124,6 +124,11 @@ impl SimulatorHub {
         if dropped {
             return;
         }
+        if latency == 0 {
+            // Zero-latency links skip the timer (coarse on some platforms).
+            let _ = tx.send(TransportEvent::Received { from, data }).await;
+            return;
+        }
         tokio::spawn(async move {
             sleep(Duration::from_millis(latency)).await;
 
@@ -144,7 +149,7 @@ pub struct SimulatedTransport {
 impl SimulatedTransport {
     pub async fn new(local_id: PeerId, hub: SimulatorHub) -> Self {
         let rx = hub.register(local_id).await;
-        let (events_tx, _) = broadcast::channel(1024);
+        let (events_tx, _) = broadcast::channel(8192);
 
         Self {
             local_id,

@@ -11,7 +11,11 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 const HELP: &str = "\
   <text>                         broadcast to everyone nearby
   /msg <agent> <text>            encrypted direct message
-  /call <agent|@cap|-> <tool> [json]   call a tool (- = auto-pick)
+  /call <agent|@cap|-> <tool> [json]   call a tool, streaming its output (- = auto-pick)
+  /file <agent> <path>           send a file
+  /topics [pattern]              live values nearby (rover1/*, *)
+  /pub <topic> <json>            publish a value
+  /stop [robot] [reason]         EMERGENCY STOP every robot in range (or one)
   /card <agent>                  show an agent's tools
   /peers                         list nearby agents
   /id                            show your identity
@@ -45,6 +49,8 @@ pub async fn run(agent: Agent) -> Result<()> {
                         InboxItem::Message { from_name, text, direct: true, .. } => format!("{} {}: {text}", magenta("[dm]"), bold(from_name)),
                         InboxItem::Message { from_name, text, channel, .. } => format!("{} {}: {text}", dim(channel.as_deref().unwrap_or("[all]")), bold(from_name)),
                         InboxItem::Call { from_name, tool, .. } => format!("{} {from_name} called {tool} (chat mode does not serve exposed tools)", yellow("[call]")),
+                        InboxItem::Stop { from_name, reason, .. } => red(&format!("■ EMERGENCY STOP from {from_name}: {reason}")),
+                        InboxItem::File { from_name, name, size, path, .. } => format!("{} {} sent {name} ({}) → {path}", green("[file]"), bold(from_name), ops::human_size(*size)),
                     };
                     println!("\r{line}");
                     prompt();
@@ -118,7 +124,17 @@ async fn handle(agent: &Agent, line: &str) -> Result<Option<String>> {
                     .map_err(|e| anyhow::anyhow!("args must be JSON: {e}"))?,
                 None => Value::Null,
             };
-            let out = ops::call(agent, (to != "-").then_some(to), tool, args, None).await?;
+            // Partial output is printed as it arrives.
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let printer = tokio::spawn(async move {
+                while let Some(chunk) = rx.recv().await {
+                    println!("{} {}", dim("…"), ops::compact(&chunk, 4000));
+                }
+            });
+            let out =
+                ops::call_streaming(agent, (to != "-").then_some(to), tool, args, None, Some(tx))
+                    .await?;
+            let _ = printer.await;
             let body = ops::compact(&out.data, 4000);
             if out.ok {
                 format!(
@@ -130,6 +146,37 @@ async fn handle(agent: &Agent, line: &str) -> Result<Option<String>> {
             } else {
                 format!("{} {} {}", red("✗"), dim(&out.peer_name), body)
             }
+        }
+        "/topics" | "/t" => ops::render_topics(&agent.topics(Some(rest).filter(|r| !r.is_empty()))),
+        "/pub" => {
+            let (topic, raw) = rest.split_once(' ').unwrap_or((rest, "null"));
+            let data: Value =
+                serde_json::from_str(raw.trim()).unwrap_or(Value::String(raw.trim().into()));
+            dim(&ops::publish(agent, topic, data, None).await?)
+        }
+        "/stop" => {
+            let (to, reason) = match rest.split_once(' ') {
+                Some((to, reason)) if agent.resolve(to).is_ok() => (Some(to), reason),
+                _ if !rest.is_empty() && agent.resolve(rest).is_ok() => {
+                    (Some(rest), "emergency stop")
+                }
+                _ => (
+                    None,
+                    if rest.is_empty() {
+                        "emergency stop"
+                    } else {
+                        rest
+                    },
+                ),
+            };
+            red(&ops::estop(agent, to, reason).await?)
+        }
+        "/file" => {
+            let (to, path) = rest
+                .split_once(' ')
+                .ok_or_else(|| anyhow::anyhow!("usage: /file <agent> <path>"))?;
+            let receipt = ops::send_file(agent, to, path.trim()).await?;
+            format!("{} {}", green("✓"), ops::render_receipt(to, &receipt))
         }
         other => format!("unknown command {other}\n{HELP}"),
     }))

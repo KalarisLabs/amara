@@ -94,6 +94,7 @@ impl PacketType {
             Self::Announce
                 | Self::Capability
                 | Self::Heartbeat
+                | Self::Event
                 | Self::Message
                 | Self::Task
                 | Self::Result
@@ -103,6 +104,9 @@ impl PacketType {
                 | Self::Store
                 | Self::Forward
                 | Self::RouteRequest
+                | Self::FileManifest
+                | Self::FileChunk
+                | Self::FileComplete
         )
     }
 

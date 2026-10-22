@@ -21,9 +21,11 @@ jobs:
         include:
           - { os: ubuntu-latest,    target: x86_64-unknown-linux-musl,  asset: amara-linux-x64 }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, asset: amara-linux-arm64 }
-          - { os: macos-latest,     target: aarch64-apple-darwin,       asset: amara-macos-arm64 }
-          - { os: macos-latest,     target: x86_64-apple-darwin,        asset: amara-macos-x64 }
-          - { os: windows-latest,   target: x86_64-pc-windows-msvc,     asset: amara-windows-x64.exe }
+          # Desktop builds include Bluetooth and the tray app. Static Linux builds stay
+          # dependency-free; build Pi/Linux BLE from source (`--features ble`).
+          - { os: macos-latest,     target: aarch64-apple-darwin,       asset: amara-macos-arm64,     features: "ble,tray" }
+          - { os: macos-latest,     target: x86_64-apple-darwin,        asset: amara-macos-x64,       features: "ble,tray" }
+          - { os: windows-latest,   target: x86_64-pc-windows-msvc,     asset: amara-windows-x64.exe, features: "ble,tray" }
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -33,7 +35,8 @@ jobs:
         if: contains(matrix.target, 'musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Build
-        run: cargo build --release --locked --bin amara --target ${{ matrix.target }}
+        shell: bash
+        run: cargo build --release --locked --bin amara --target ${{ matrix.target }} ${{ matrix.features && format('--features {0}', matrix.features) || '' }}
       - name: Package
         shell: bash
         run: |

@@ -14,9 +14,15 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 socket2 = { workspace = true, optional = true }
 rand = { workspace = true }
+futures-util = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
+btleplug = { version = "0.13", optional = true }
+ble-peripheral-rust = { version = "0.2", optional = true }
 
 
 [features]
 default = ["udp"]
 # Zero-config LAN transport (UDP multicast + unicast).
 udp = ["dep:socket2"]
+# Bluetooth LE transport (central via btleplug, peripheral via ble-peripheral-rust).
+ble = ["dep:btleplug", "dep:ble-peripheral-rust", "dep:futures-util", "dep:uuid"]

@@ -59,10 +59,89 @@ export class Amara {
     if (!out.ok) throw new AmaraError(out.data?.error ?? "remote tool failed");
     return out.data;
   }
+  /**
+   * Call `tool` and iterate its output as it is produced:
+   *   for await (const part of mesh.callStream("generate", { prompt })) ...
+   * Yields { chunk } for each partial result, then { result, ok, ms, peer }.
+   */
+  async *callStream(tool, args = {}, { to, timeout } = {}) {
+    for await (const { event, data } of this.#sse("POST", "/v1/call", { to, tool, args, timeout_secs: timeout, stream: true })) {
+      if (event === "chunk") yield { chunk: data };
+      else if (event === "result") yield { result: data.data, ok: data.ok, ms: data.ms, peer: data.peer };
+      else if (event === "error") throw new AmaraError(data.error ?? "call failed");
+    }
+  }
+  /** Send a file to an agent in range: { path } on the node's disk, or { data: Uint8Array|ArrayBuffer, name }. */
+  async sendFile(to, { path, data, name } = {}) {
+    let body;
+    if (path) body = { to, path };
+    else if (data) {
+      const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      body = { to, name: name ?? "file", data_base64: btoa(bin) };
+    } else throw new AmaraError("give { path } or { data, name }");
+    return (await this.#req("POST", "/v1/files", body)).receipt;
+  }
+  /** Publish a value on a topic (e.g. "rover1/battery") to agents within `hops` (default 2). */
+  async publish(topic, data = null, { hops } = {}) { return (await this.#req("POST", "/v1/publish", { topic, data, hops })).seq; }
+  /** Newest value per (sender, topic). pattern: exact, "rover1/*" or "*". */
+  topics(pattern) { return this.#req("GET", "/v1/topics" + (pattern ? `?topic=${encodeURIComponent(pattern)}` : "")); }
+  /** Iterate samples matching `pattern` as they arrive: for await (const s of mesh.watch("rover1/*")) ... */
+  async *watch(pattern = "*") {
+    for await (const { event, data } of this.#sse("GET", `/v1/topics/watch?topic=${encodeURIComponent(pattern)}`)) {
+      if (event === "sample") yield data;
+    }
+  }
+  /** EMERGENCY STOP every robot in range, or only `to`. */
+  async estop(reason = "emergency stop", { to } = {}) { return (await this.#req("POST", "/v1/estop", { to, reason })).status; }
+  /** Files other agents sent to this node, newest first. */
+  files() { return this.#req("GET", "/v1/files"); }
+  /** Contents of a received file as an ArrayBuffer. */
+  async download(name) {
+    const res = await fetch(`${this.url}/v1/files/${encodeURIComponent(name)}`, { headers: { Authorization: `Bearer ${this.token}` } });
+    if (!res.ok) throw new AmaraError(`download failed: HTTP ${res.status}`);
+    return res.arrayBuffer();
+  }
+
+  async *#sse(method, path, body) {
+    const res = await fetch(this.url + path, {
+      method,
+      headers: { Authorization: `Bearer ${this.token}`, "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      throw new AmaraError(data?.error ?? `HTTP ${res.status}`);
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      buf += dec.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const block = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        let event = "message", data = "";
+        for (const line of block.split("\n")) {
+          if (line.startsWith("event:")) event = line.slice(6).trim();
+          else if (line.startsWith("data:")) data += line.slice(5).trim();
+        }
+        if (data) yield { event, data: JSON.parse(data) };
+      }
+    }
+  }
+
   card(peer) { return this.#req("GET", `/v1/card/${encodeURIComponent(peer)}`); }
   inbox({ wait = 0, max = 50 } = {}) { return this.#req("GET", `/v1/inbox?wait=${wait}&max=${max}`); }
-  reply(callId, { result = null, error } = {}) {
-    return this.#req("POST", "/v1/reply", error !== undefined ? { call_id: callId, error } : { call_id: callId, result });
+  /** Answer a call. `partial: true` streams `result` as progress and keeps the call open. */
+  reply(callId, { result = null, error, partial = false } = {}) {
+    const body = error !== undefined ? { call_id: callId, error } : { call_id: callId, result };
+    if (partial) body.partial = true;
+    return this.#req("POST", "/v1/reply", body);
   }
   expose(name, description, inputSchema) { return this.#req("POST", "/v1/tools", { name, description, input_schema: inputSchema }); }
   unexpose(name) { return this.#req("DELETE", `/v1/tools/${encodeURIComponent(name)}`); }
@@ -122,7 +201,11 @@ export class Amara {
         case "call": r = await this.callRaw(args.tool, args.args ?? {}, { to: args.to, timeout: args.timeout }); break;
         case "card": r = await this.card(args.to); break;
         case "expose": r = args.remove ? (await this.unexpose(args.name), "removed") : (await this.expose(args.name, args.description ?? "", args.input_schema), "exposed"); break;
-        case "reply": await this.reply(args.call_id, { result: args.result, error: args.error }); r = "reply sent"; break;
+        case "reply": await this.reply(args.call_id, { result: args.result, error: args.error, partial: !!args.partial }); r = "reply sent"; break;
+        case "send_file": r = await this.sendFile(args.to, { path: args.path }); break;
+        case "topics": r = await this.topics(args.topic); break;
+        case "publish": r = `published #${await this.publish(args.topic, args.data ?? null, { hops: args.hops })}`; break;
+        case "estop": r = await this.estop(args.reason ?? "emergency stop", { to: args.to }); break;
         default: return `error: unknown tool ${name}`;
       }
       return typeof r === "string" ? r : JSON.stringify(r);

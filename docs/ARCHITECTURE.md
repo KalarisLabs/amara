@@ -8,19 +8,19 @@ flowchart TB
     subgraph L5["5 · Interfaces — amara-cli"]
         MCP["MCP server<br/>(stdio)"]
         API["HTTP API + SSE"]
-        CLI["CLI · chat · simulate"]
+        CLI["CLI · chat · simulate · bench · tray · /ui"]
     end
     subgraph L4["4 · Agent runtime — amara-runtime / amara-agent"]
-        RT["tools · calls · inbox · policy · presence"]
+        RT["tools · streaming calls · inbox · files · topics · e-stop · policy · presence"]
     end
     subgraph L3["3 · Protocol — amara-protocol / amara-crypto"]
         P["header · signatures · sealed boxes · bodies · framing"]
     end
     subgraph L2["2 · Mesh — amara-mesh"]
-        M["auth · dedup · rate limit · routes · relay"]
+        M["auth · dedup · rate limit · routes · relay · store and forward"]
     end
     subgraph L1["1 · Transport — amara-transport"]
-        T["UDP LAN · simulator · loopback · (BLE)"]
+        T["UDP LAN · Bluetooth LE · simulators"]
     end
     L5 --> L4 --> L3 --> L2 --> L1
 ```
@@ -32,11 +32,11 @@ flowchart TB
 | `amara-core` | Shared vocabulary: `PeerId`, `PeerInfo`, errors, constants, events |
 | `amara-crypto` | Identity, packet signing, sealed boxes, HKDF |
 | `amara-protocol` | 42-byte header, packet encode/decode, announce codec, JSON bodies, per-hop framing |
-| `amara-transport` | `Transport` trait; `UdpTransport` (feature `udp`), `SimulatedTransport`, `LoopbackTransport` |
-| `amara-mesh` | `MeshEngine`: authenticated flooding, learned next-hop routes, peer registry |
-| `amara-runtime` | `AgentRuntime`: tools (fn / command / inbox), calls, replies, messages, policy |
+| `amara-transport` | `Transport` trait; `UdpTransport` (feature `udp`), `BleTransport` over any `BleRadio` (native stack with feature `ble`, `BleAir` for tests), `SimulatedTransport`, `LoopbackTransport` |
+| `amara-mesh` | `MeshEngine`: authenticated flooding, learned next-hop routes, peer registry, known keys, custody (store and forward) |
+| `amara-runtime` | `AgentRuntime`: tools (fn / command / inbox), streaming calls, messages, file transfer, topics, emergency stop, policy |
 | `amara-agent` | Builder SDK: `Agent::builder("nova").tool_fn(..).start()` |
-| `amara-cli` | The `amara` binary: MCP server, HTTP API, CLI, chat, setup, simulator, doctor |
+| `amara-cli` | The `amara` binary: MCP server, HTTP API + dashboard, CLI, chat, setup, simulator, bench, doctor, tray (feature `tray`) |
 | `sdk/python`, `sdk/js` | Zero-dependency clients for the HTTP API |
 
 ## Data flow: a tool call over two hops
@@ -73,5 +73,7 @@ sequenceDiagram
 * Unit tests in every crate (codecs, crypto, fragmentation, policy, rendering).
 * `crates/amara-runtime/tests/mesh.rs` runs multi-node meshes on the deterministic simulator: multi-hop E2E calls,
   capability routing, inbox tools, DMs and broadcasts, trust policy, timeouts.
-* `amara-transport` tests real UDP sockets on loopback.
+* The same file covers streaming, inbox streaming, two-hop file transfer, store and forward with the sender gone,
+  topic reach and latest values, and emergency stops with targets and policies.
+* `amara-transport` tests real UDP sockets on loopback and the BLE link layer over `BleAir`.
 * `amara simulate` is a runnable three-node demo.

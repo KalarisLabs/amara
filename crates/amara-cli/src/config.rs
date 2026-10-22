@@ -1,7 +1,8 @@
 //! `~/.amara/config.toml`, identities, API token and daemon discovery.
 
 use amara_agent::{
-    Agent, AgentBuilder, CommandTool, ToolSpec, UdpConfig, amara_home, identity_path,
+    AcceptFiles, Agent, AgentBuilder, CommandTool, EstopFrom, EstopPolicy, FilePolicy, ToolSpec,
+    UdpConfig, amara_home, identity_path,
 };
 use amara_core::peer::PeerId;
 use amara_crypto::identity::NodeIdentity;
@@ -23,9 +24,41 @@ pub struct Config {
     /// Static peers (`host:port`) for networks without multicast.
     pub peers: Vec<String>,
     pub relay: Option<bool>,
+    /// Also run the Bluetooth LE transport (needs a build with the `ble` feature).
+    pub ble: Option<bool>,
     pub api: ApiConfig,
     pub security: SecurityConfig,
+    pub store: StoreConfig,
+    pub files: FilesConfig,
+    pub robot: RobotConfig,
     pub tools: Vec<CommandToolConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct StoreConfig {
+    /// Hold messages for out-of-range peers on behalf of others (default true).
+    pub custody: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RobotConfig {
+    /// Who may trigger this node's emergency stop: "anyone" (default), "trusted" or "off".
+    pub estop_from: Option<EstopFrom>,
+    /// Program and args run on an accepted emergency stop (stop JSON on stdin).
+    pub estop_command: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct FilesConfig {
+    /// Who may send files: "anyone" (default), "trusted" or "off".
+    pub accept: Option<AcceptFiles>,
+    /// Largest accepted file in MiB (default 32).
+    pub max_mb: Option<u64>,
+    /// Download directory (default ~/.amara/received/<name>).
+    pub dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -94,6 +127,9 @@ pub struct NodeArgs {
     /// Capability tag to advertise (repeatable).
     #[arg(long = "tag", global = true)]
     pub tags: Vec<String>,
+    /// Also mesh over Bluetooth LE (phones, Pis, no network needed).
+    #[arg(long, global = true)]
+    pub ble: bool,
 }
 
 pub fn hostname() -> String {
@@ -207,6 +243,8 @@ pub async fn start_node(args: &NodeArgs, default_suffix: Option<&str>) -> Result
         ..Default::default()
     };
 
+    let builder_name = identity.display_name().to_string();
+    let peer_id = identity.peer_id();
     let mut builder: AgentBuilder = Agent::builder(identity.display_name().to_string())
         .identity(identity)
         .lan(lan);
@@ -221,7 +259,29 @@ pub async fn start_node(args: &NodeArgs, default_suffix: Option<&str>) -> Result
     }
     builder = builder
         .require_trusted(config.security.require_trusted)
-        .relay(config.relay.unwrap_or(true));
+        .relay(config.relay.unwrap_or(true))
+        .custody(config.store.custody.unwrap_or(true));
+    let defaults = FilePolicy::default();
+    builder = builder.files(FilePolicy {
+        accept: config.files.accept.unwrap_or(defaults.accept),
+        max_size: config
+            .files
+            .max_mb
+            .map(|mb| mb * 1024 * 1024)
+            .unwrap_or(defaults.max_size),
+        dir: config.files.dir.clone(),
+    });
+    builder = builder.estop(EstopPolicy {
+        from: config.robot.estop_from.unwrap_or_default(),
+        command: config
+            .robot
+            .estop_command
+            .split_first()
+            .map(|(program, args)| (program.clone(), args.to_vec())),
+    });
+    if args.ble || config.ble.unwrap_or(false) {
+        builder = with_ble(builder, &builder_name, peer_id)?;
+    }
     if let Some(n) = config.security.calls_per_minute {
         builder = builder.calls_per_minute(n);
     }
@@ -235,6 +295,22 @@ pub async fn start_node(args: &NodeArgs, default_suffix: Option<&str>) -> Result
     }
     let agent = builder.start().await.context("starting mesh node")?;
     Ok(RunningNode { agent, _lock: lock })
+}
+
+#[cfg(feature = "ble")]
+fn with_ble(builder: AgentBuilder, name: &str, id: PeerId) -> Result<AgentBuilder> {
+    use amara_transport::{BleTransport, NativeRadio, NativeRadioConfig};
+    let radio = NativeRadio::new(NativeRadioConfig {
+        // Short: legacy advertisements leave little room next to a 128-bit UUID.
+        name: format!("am-{name}").chars().take(12).collect(),
+        ..Default::default()
+    });
+    Ok(builder.transport(Box::new(BleTransport::new(id, radio))))
+}
+
+#[cfg(not(feature = "ble"))]
+fn with_ble(_: AgentBuilder, _: &str, _: PeerId) -> Result<AgentBuilder> {
+    bail!("this amara build has no Bluetooth support; rebuild with `--features ble`")
 }
 
 // ── API token & daemon discovery ─────────────────────────────────────────────

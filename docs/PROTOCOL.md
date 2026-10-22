@@ -2,12 +2,14 @@
 
 **Version** 1 (`0x01`) · **Status** implemented in `amara-protocol` / `amara-mesh` / `amara-runtime`
 
-AMARA is a compact binary protocol for AI agents that meet over proximity links (LAN today, BLE next).
-It covers discovery, authenticated flooding, learned routing, end-to-end encrypted tool calls, and messaging.
+AMARA is a compact binary protocol for AI agents that meet over proximity links (LAN and Bluetooth LE).
+It covers discovery, authenticated flooding, learned routing, end-to-end encrypted tool calls (including streaming
+results), messaging, store-and-forward for peers that are out of range, and file transfer.
 
 ```text
 ┌───────────────────────────── one hop ─────────────────────────────┐
 │ link datagram   "AM" 0x01 · link_sender(8) · frame                 │  §8  (UDP)
+│                 "AM" 0x02 · link_sender(8) · link_dest(8) · frame  │  §8.1 (BLE)
 │ frame           0xA7 · kind · packet | fragment                    │  §7
 │ packet          header(42) · payload · signature(64)               │  §2–3
 │ payload         Announce | sealed(JSON body) | JSON body           │  §4–6
@@ -75,11 +77,16 @@ The `SIGNED` flag and `payload_length` are set **before** signing. Unsigned pack
 | `0x01` | `ANNOUNCE` | Announce (§4) | broadcast | ✓ |
 | `0x10` | `TASK` | sealed `Call` | unicast | ✓ |
 | `0x20` | `RESULT` | sealed `Reply` | unicast | ✓ |
+| `0x21` | `RESULT_CHUNK` | sealed `Chunk` (§10.1) | unicast | ✓ |
 | `0x32` | `MESSAGE` | sealed `Chat` (DM) or plain `Chat` (broadcast) | either | ✓ |
+| `0x60` | `STORE` | Envelope (§11) | broadcast | ✓ |
+| `0x61` | `FORWARD` | Envelope (§11) | unicast | ✓ |
+| `0x70` | `FILE_MANIFEST` | sealed `FileOffer` (§12) | unicast | ✓ |
+| `0x71` | `FILE_CHUNK` | sealed binary chunk (§12) | unicast | ✓ |
+| `0x72` | `FILE_COMPLETE` | sealed `FileStatus` (§12) | unicast | ✓ |
 
-Codes `0x02–0x04`, `0x11–0x13`, `0x21–0x22`, `0x30–0x31`, `0x40–0x41`, `0x50–0x51`, `0x60–0x61`, `0x70–0x72`, `0x80–0x81`
-are reserved for capability documents, streaming results, acks, store-and-forward, file transfer and sessions.
-Receivers ignore reserved types they do not implement.
+Codes `0x02–0x04`, `0x11–0x13`, `0x22`, `0x30–0x31`, `0x40–0x41`, `0x50–0x51`, `0x80–0x81` are reserved for
+capability documents, acks, routing and sessions. Receivers ignore reserved types they do not implement.
 
 ## 4. ANNOUNCE (presence beacon)
 
@@ -125,11 +132,14 @@ Bodies are JSON so any language can speak AMARA, then LZ4-compressed when larger
 compression (`COMPRESSED` flag). Decompressors refuse declared sizes above 16 MiB.
 
 ```jsonc
-// TASK — call a tool
-{ "id": "uuid", "tool": "summarize", "args": { "text": "…" }, "timeout_ms": 60000 }
+// TASK — call a tool (stream: true → partial output arrives as RESULT_CHUNK first)
+{ "id": "uuid", "tool": "summarize", "args": { "text": "…" }, "timeout_ms": 60000, "stream": true }
 
-// RESULT — reply to a call (ok=false → data = {"error": "…"})
-{ "id": "uuid", "ok": true, "data": { … }, "ms": 42 }
+// RESULT — reply to a call (ok=false → data = {"error": "…"}; chunks = RESULT_CHUNKs sent before it)
+{ "id": "uuid", "ok": true, "data": { … }, "ms": 42, "chunks": 3 }
+
+// RESULT_CHUNK — one piece of partial output
+{ "id": "uuid", "seq": 0, "data": "first line" }
 
 // MESSAGE — chat; channel only on broadcasts
 { "text": "hello mesh", "channel": "#lab" }
@@ -167,6 +177,23 @@ Reassembly limits: 8192 fragments per packet, 64 concurrent groups, 64 MiB buffe
 
 `link_sender` is the *previous hop*, used only to address the next datagram; it is not trusted for anything else.
 
+### 8.1 Bluetooth LE transport
+
+Every node runs both GATT roles, like BitChat: it advertises the AMARA service **and** scans for and connects to
+other nodes advertising it.
+
+| Item | Value |
+|---|---|
+| Service | `414d4152-4100-4d65-7368-000000000001` |
+| RX characteristic (central → peripheral) | `…0002`, write / write without response |
+| TX characteristic (peripheral → centrals) | `…0003`, notify |
+| Datagram | `"AM" 0x02 · link_sender (8) · link_dest (8) · frame`, one per write or notification |
+| Write size | 182 bytes by default (ATT MTU 185), so the per-hop frame MTU is 163 bytes |
+
+A peripheral's notification reaches every subscribed central, so receivers drop datagrams whose `link_dest` is
+neither their own PeerId nor broadcast (all zeros). Packets above the frame MTU are fragmented per hop (§7), which
+is what lets the same signed packets ride UDP and BLE unchanged and be relayed between the two.
+
 ## 9. Mesh processing
 
 For every reassembled packet:
@@ -201,12 +228,77 @@ caller                         relay(s)                       callee
 * **Inbox tools**: an agent may expose a tool that an external AI answers (MCP `expose` → `inbox` → `reply`).
   If nothing answers within the caller's timeout, the caller receives a timeout.
 
-## 11. Limits
+### 10.1 Streaming results
+
+A caller sets `"stream": true` on the `Call`. The callee then sends partial output as sealed `RESULT_CHUNK` packets
+(`seq` 0, 1, 2, …) before the final `RESULT`, whose `chunks` field says how many were sent. Chunks may overtake each
+other or the result on a multi-path mesh, so the caller re-orders by `seq` and waits up to 2 s after the result for
+stragglers. Chunks from any PeerId other than the callee are ignored.
+
+Producers: Rust tools write to `ctx.stream`; command tools stream each stdout line; inbox-served tools answer with
+`reply(partial: true)` before the final `reply`. A tool that is called without `stream` produces no chunks.
+
+## 11. Store and forward
+
+A directed packet for a peer that is out of range (not in the registry) but whose keys are known is held instead of
+dropped. Keys of every verified peer are remembered (up to 4096, persisted in `state_dir`).
+
+```text
+envelope = sender_ed25519 (32) · sender_x25519 (32) · name (u8 len · bytes) · original signed packet
+```
+
+1. The sender signs the original packet (e.g. a sealed `MESSAGE`), keeps the envelope in its own custody, and
+   broadcasts it in a `STORE` packet.
+2. Every node with custody enabled (the default) that hears the `STORE` verifies it: the inner packet must be signed
+   by the envelope's key, that key must hash to the inner `source_id`, and the inner source must equal the `STORE`'s
+   source. It then holds the envelope for the inner destination. If it can see the destination itself, it forwards
+   immediately.
+3. When the destination announces after being absent (new, or silent for 45 s or more), every custodian sends it
+   the envelope in a `FORWARD` packet addressed to it.
+4. The destination verifies the inner packet against the envelope's keys (self-certifying, so the sender need not be
+   online), dedups on the inner `(source_id, message_id)` so copies from several custodians collapse into one, and
+   delivers it flagged `stored`. The inner timestamp may be up to 12 h + 1 h old.
+
+The payload stays sealed end to end: custodians learn only sender, recipient, size and time.
+
+| Limit | Value |
+|---|---|
+| Held packets | 1000 per node, 100 per destination (oldest dropped first) |
+| Lifetime | 12 hours |
+| Eligible | directed `MESSAGE` (DMs). Calls and files need both ends in range. |
+
+## 12. File transfer
+
+```text
+sender                                        receiver
+  │ FILE_MANIFEST sealed(FileOffer) ──────────►│ policy: accept? size? trusted?
+  │◄────────────── FILE_COMPLETE {accepted | rejected}
+  │ FILE_CHUNK sealed(id · index · bytes) × n ─►│ written straight to disk
+  │ FILE_COMPLETE {sent} ──────────────────────►│
+  │◄────────────── FILE_COMPLETE {missing: [..]}  resend those, ask again (≤ 10 rounds)
+  │◄────────────── FILE_COMPLETE {received}       BLAKE3 verified, file saved
+```
+
+```jsonc
+// FILE_MANIFEST
+{ "id": "uuid", "name": "report.pdf", "size": 1048576, "chunk": 32768, "hash": "<hex BLAKE3>" }
+// FILE_COMPLETE (either direction)
+{ "id": "uuid", "state": "accepted|rejected|sent|missing|received", "missing": [3, 9], "error": "…" }
+```
+
+`FILE_CHUNK` is the only binary body: `id (16) · index u32 · bytes`, sealed like everything else. Chunks are 32 KiB
+and paced at 50 per second, half of every relay's per-source budget. Receivers sanitize the name (no directories,
+no hidden files) and never overwrite: `name (1).ext`. Defaults: files from anyone up to 32 MiB, at most 8 transfers
+in flight, stalled transfers dropped after 120 s.
+
+## 13. Limits
 
 | Limit | Value |
 |---|---|
 | Max TTL | 7 |
-| Max payload | 16 MiB (bodies are effectively capped by fragments × MTU ≈ 11 MiB on UDP) |
+| Max payload | 16 MiB (bodies are effectively capped by fragments × MTU ≈ 11 MiB on UDP, ≈ 1.3 MiB on BLE) |
+| File size | 32 MiB by default (`files.max_mb`), any size in principle (32 KiB chunks) |
+| Store and forward | 1000 packets, 100 per destination, 12 h |
 | Announce | 64 capabilities × 64 bytes |
 | Dedup cache | 10 000 entries |
 | Packets per source | 100 /s |

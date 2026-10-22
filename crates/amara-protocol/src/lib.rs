@@ -15,10 +15,12 @@ pub mod frame;
 pub mod header;
 pub mod messages;
 pub mod packet;
+pub mod store;
 
 pub use codec::Announce;
 pub use fragment::{Fragment, FragmentHeader};
 pub use frame::{FrameAssembler, encode_frames};
 pub use header::{PacketFlags, PacketHeader, PacketType};
-pub use messages::{Call, Chat, Reply};
+pub use messages::{Call, Chat, Chunk, FileChunk, FileOffer, FileState, FileStatus, Reply, Sample};
 pub use packet::Packet;
+pub use store::Envelope;

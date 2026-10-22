@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#7c3aed">
+<link rel="manifest" href="/ui/manifest.webmanifest">
+<title>AMARA mesh</title>
+<style>
+  :root {
+    --bg: #f7f7fb; --panel: #ffffff; --ink: #1d1b2e; --muted: #6b6880; --line: #e4e2ee;
+    --accent: #7c3aed; --accent-ink: #ffffff; --ok: #0f9d58; --warn: #b45309; --err: #c62828;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12111a; --panel: #1b1a26; --ink: #ecebf5; --muted: #9a97b0; --line: #2c2a3b;
+      --accent: #a78bfa; --accent-ink: #12111a; --ok: #4ade80; --warn: #fbbf24; --err: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; z-index: 2; }
+  header h1 { font-size: 17px; margin: 0; letter-spacing: .04em; }
+  header .me { color: var(--muted); font-family: var(--mono); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  header .stats { margin-left: auto; display: flex; gap: 12px; color: var(--muted); font-size: 13px; white-space: nowrap; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.live { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
+  main { display: grid; gap: 16px; padding: 16px; max-width: 1180px; margin: 0 auto; grid-template-columns: 320px 1fr; }
+  @media (max-width: 820px) { main { grid-template-columns: 1fr; } header .stats { display: none; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; min-width: 0; }
+  section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 10px; }
+  .peer { display: flex; gap: 10px; padding: 8px; border-radius: 8px; cursor: pointer; align-items: flex-start; }
+  .peer:hover, .peer.sel { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .peer b { display: block; }
+  .peer small { color: var(--muted); font-family: var(--mono); }
+  .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .tag { font-size: 11px; padding: 1px 7px; border-radius: 99px; border: 1px solid var(--line); color: var(--muted); }
+  .empty { color: var(--muted); font-size: 14px; padding: 6px 2px; }
+  form { display: grid; gap: 8px; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; min-width: 0; }
+  input, textarea, select { width: 100%; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; }
+  textarea { font-family: var(--mono); font-size: 13px; min-height: 70px; resize: vertical; }
+  button { font: inherit; font-weight: 600; border: 0; border-radius: 8px; padding: 9px 14px; background: var(--accent); color: var(--accent-ink); cursor: pointer; }
+  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+  button:disabled { opacity: .5; cursor: default; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+  .tabs button { background: transparent; color: var(--muted); border: 1px solid var(--line); font-weight: 500; }
+  .tabs button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .feed { display: grid; gap: 8px; max-height: 60vh; overflow: auto; }
+  .item { border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; }
+  .item .meta { font-size: 12px; color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; }
+  .item .body { white-space: pre-wrap; word-break: break-word; margin-top: 3px; }
+  .item.call { border-color: color-mix(in srgb, var(--warn) 50%, var(--line)); }
+  .item.file { border-color: color-mix(in srgb, var(--ok) 50%, var(--line)); }
+  pre.out { font-family: var(--mono); font-size: 13px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; white-space: pre-wrap; word-break: break-word; max-height: 40vh; overflow: auto; margin: 10px 0 0; }
+  .err { color: var(--err); }
+  .hidden { display: none !important; }
+  #login { max-width: 460px; margin: 12vh auto; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div id="login" class="hidden">
+  <section>
+    <h2>Connect to your AMARA node</h2>
+    <form id="loginForm">
+      <p class="empty">Paste the API token (<code>~/.amara/api.token</code>), or open the link from <code>amara pair</code> / the tray menu.</p>
+      <input id="tokenInput" placeholder="API token" autocomplete="off">
+      <button>Connect</button>
+    </form>
+  </section>
+</div>
+
+<div id="app" class="hidden">
+  <header>
+    <span class="dot" id="live"></span>
+    <h1>AMARA</h1>
+    <span class="me" id="me"></span>
+    <span class="stats"><span id="sPeers">0 nearby</span><span id="sHeld"></span><span id="sTools"></span></span>
+  </header>
+  <main>
+    <section>
+      <h2>Agents nearby</h2>
+      <div id="peers"><div class="empty">Looking for agents…</div></div>
+    </section>
+    <div style="display:grid;gap:16px;min-width:0">
+      <section>
+        <div class="tabs" id="tabs">
+          <button data-tab="msg" class="on">Message</button>
+          <button data-tab="call">Call a tool</button>
+          <button data-tab="file">Send a file</button>
+        </div>
+        <form id="msgForm" data-pane="msg">
+          <div class="row"><input id="msgTo" placeholder="to: agent name (empty = everyone)"><input id="msgChannel" placeholder="#channel (broadcasts)"></div>
+          <div class="row"><input id="msgText" placeholder="Message" required><button style="flex:none">Send</button></div>
+        </form>
+        <form id="callForm" data-pane="call" class="hidden">
+          <div class="row"><input id="callTo" placeholder="to: name, @tag, or empty = best agent"><input id="callTool" placeholder="tool" required></div>
+          <textarea id="callArgs" placeholder='{"text": "..."}'>{}</textarea>
+          <div class="row"><button style="flex:none">Call (streaming)</button><span class="empty" id="callStatus"></span></div>
+          <pre class="out hidden" id="callOut"></pre>
+        </form>
+        <form id="fileForm" data-pane="file" class="hidden">
+          <div class="row"><input id="fileTo" placeholder="to: agent name" required><input id="fileInput" type="file" required></div>
+          <div class="row"><button style="flex:none">Send file</button><span class="empty" id="fileStatus"></span></div>
+        </form>
+      </section>
+      <section>
+        <h2>Inbox</h2>
+        <div class="feed" id="feed"><div class="empty">Nothing yet. Messages, calls and files land here.</div></div>
+      </section>
+      <section>
+        <h2>Received files</h2>
+        <div id="files"><div class="empty">None yet.</div></div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let token = "";
+try {
+  const frag = new URLSearchParams(location.hash.slice(1));
+  token = frag.get("token") || localStorage.getItem("amara.token") || "";
+  if (frag.get("token")) { localStorage.setItem("amara.token", token); history.replaceState(null, "", location.pathname); }
+} catch (_) { /* storage blocked: token only lives in memory */ }
+
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => null);
+  if (res.status === 401) { showLogin(); throw new Error("invalid token"); }
+  if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+  return data;
+}
+
+function esc(s) { return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+function size(n) { return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`; }
+function short(id) { return String(id || "").slice(0, 8); }
+function text(v) { return typeof v === "string" ? v : JSON.stringify(v, null, 2); }
+
+function showLogin() { $("app").classList.add("hidden"); $("login").classList.remove("hidden"); }
+$("loginForm").onsubmit = (e) => {
+  e.preventDefault();
+  token = $("tokenInput").value.trim();
+  try { localStorage.setItem("amara.token", token); } catch (_) {}
+  start();
+};
+
+async function refresh() {
+  const [status, peers] = await Promise.all([api("GET", "/v1/status"), api("GET", "/v1/peers")]);
+  $("me").textContent = `${status.name} · ${status.id}`;
+  $("sPeers").textContent = `${status.peers} nearby`;
+  $("sHeld").textContent = status.held ? `${status.held} held for offline peers` : "";
+  $("sTools").textContent = status.tools.length ? `serving ${status.tools.map((t) => t.name).join(", ")}` : "";
+  $("peers").innerHTML = peers.length ? peers.map((p) => `
+    <div class="peer" data-name="${esc(p.name)}">
+      <span class="dot live" style="margin-top:6px"></span>
+      <div style="min-width:0">
+        <b>${esc(p.name)}</b>
+        <small>${short(p.id)} · ${p.hops} hop${p.hops === 1 ? "" : "s"} · ${esc(p.platform)} · ${esc(p.load)}</small>
+        <div class="tags">${p.capabilities.map((c) => `<span class="tag">${esc(c)}</span>`).join("")}</div>
+      </div>
+    </div>`).join("") : `<div class="empty">No agents nearby yet. Discovery takes a few seconds.</div>`;
+  for (const el of document.querySelectorAll(".peer")) {
+    el.onclick = () => { for (const id of ["msgTo", "callTo", "fileTo"]) $(id).value = el.dataset.name; };
+  }
+}
+
+async function refreshFiles() {
+  const files = await api("GET", "/v1/files");
+  $("files").innerHTML = files.length ? files.map((f) => `
+    <div class="row" style="align-items:center;padding:4px 0">
+      <span style="overflow:hidden;text-overflow:ellipsis">${esc(f.name)} <small class="empty">${size(f.size)}</small></span>
+      <button class="ghost" style="flex:none" data-dl="${esc(f.name)}">Download</button>
+    </div>`).join("") : `<div class="empty">None yet.</div>`;
+  for (const b of document.querySelectorAll("[data-dl]")) b.onclick = () => download(b.dataset.dl);
+}
+
+async function download(name) {
+  const res = await fetch(`/v1/files/${encodeURIComponent(name)}`, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) return alert("download failed");
+  const url = URL.createObjectURL(await res.blob());
+  const a = Object.assign(document.createElement("a"), { href: url, download: name });
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+function addItem(item) {
+  const feed = $("feed");
+  if (feed.querySelector(".empty")) feed.innerHTML = "";
+  const el = document.createElement("div");
+  const when = new Date((item.at || Date.now() / 1000) * 1000).toLocaleTimeString();
+  if (item.kind === "message") {
+    const scope = item.direct ? "direct, encrypted" : (item.channel || "public");
+    el.className = "item";
+    el.innerHTML = `<div class="meta"><b>${esc(item.from_name)}</b><span>${esc(scope)}</span>${item.stored ? "<span>delivered late</span>" : ""}<span>${when}</span></div><div class="body">${esc(item.text)}</div>`;
+  } else if (item.kind === "file") {
+    el.className = "item file";
+    el.innerHTML = `<div class="meta"><b>${esc(item.from_name)}</b><span>sent a file</span><span>${when}</span></div><div class="body">${esc(item.name)} (${size(item.size)})</div>`;
+    refreshFiles().catch(() => {});
+  } else {
+    el.className = "item call";
+    el.innerHTML = `<div class="meta"><b>${esc(item.from_name)}</b><span>called ${esc(item.tool)}</span><span>${when}</span></div>
+      <div class="body">${esc(text(item.args))}</div>
+      <form class="row" style="margin-top:8px"><input placeholder="reply (JSON or text)"><button style="flex:none">Reply</button></form>`;
+    el.querySelector("form").onsubmit = async (e) => {
+      e.preventDefault();
+      const raw = e.target.querySelector("input").value;
+      let result; try { result = JSON.parse(raw); } catch (_) { result = raw; }
+      try { await api("POST", "/v1/reply", { call_id: item.call_id, result }); e.target.innerHTML = `<span class="empty">replied</span>`; }
+      catch (err) { e.target.insertAdjacentHTML("beforeend", `<span class="err">${esc(err.message)}</span>`); }
+    };
+  }
+  feed.prepend(el);
+}
+
+function listen() {
+  const es = new EventSource(`/v1/events?token=${encodeURIComponent(token)}`);
+  es.onopen = () => $("live").classList.add("live");
+  es.onerror = () => $("live").classList.remove("live");
+  es.addEventListener("inbox", (e) => addItem(JSON.parse(e.data)));
+  es.addEventListener("mesh", () => refresh().catch(() => {}));
+}
+
+for (const b of document.querySelectorAll("#tabs button")) {
+  b.onclick = () => {
+    for (const x of document.querySelectorAll("#tabs button")) x.classList.toggle("on", x === b);
+    for (const p of document.querySelectorAll("[data-pane]")) p.classList.toggle("hidden", p.dataset.pane !== b.dataset.tab);
+  };
+}
+
+$("msgForm").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    const out = await api("POST", "/v1/send", { to: $("msgTo").value.trim() || null, text: $("msgText").value, channel: $("msgChannel").value.trim() || null });
+    $("msgText").value = "";
+    addItem({ kind: "message", from_name: "you", text: out.status, direct: false, channel: "sent" });
+  } catch (err) { alert(err.message); }
+};
+
+$("callForm").onsubmit = async (e) => {
+  e.preventDefault();
+  let args;
+  try { args = JSON.parse($("callArgs").value || "{}"); } catch (_) { return alert("args must be JSON"); }
+  const out = $("callOut");
+  out.classList.remove("hidden");
+  out.textContent = "";
+  $("callStatus").textContent = "calling…";
+  const res = await fetch("/v1/call", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ to: $("callTo").value.trim() || null, tool: $("callTool").value.trim(), args, stream: true }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    $("callStatus").textContent = "";
+    out.innerHTML = `<span class="err">${esc(data.error || res.status)}</span>`;
+    return;
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf("\n\n")) >= 0) {
+      const block = buf.slice(0, i); buf = buf.slice(i + 2);
+      let event = "message", data = "";
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) data += line.slice(5).trim();
+      }
+      if (!data) continue;
+      const v = JSON.parse(data);
+      if (event === "chunk") out.textContent += text(v) + "\n";
+      else if (event === "result") {
+        $("callStatus").textContent = `${v.ok ? "done" : "failed"} · ${v.peer.name} · ${v.ms}ms`;
+        out.textContent += (out.textContent ? "\n" : "") + text(v.data);
+        if (!v.ok) out.classList.add("err"); else out.classList.remove("err");
+      } else if (event === "error") { $("callStatus").textContent = ""; out.innerHTML = `<span class="err">${esc(v.error)}</span>`; }
+    }
+  }
+};
+
+$("fileForm").onsubmit = async (e) => {
+  e.preventDefault();
+  const file = $("fileInput").files[0];
+  if (!file) return;
+  $("fileStatus").textContent = "reading…";
+  const data = await new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(",")[1] || "");
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+  $("fileStatus").textContent = "sending…";
+  try {
+    const out = await api("POST", "/v1/files", { to: $("fileTo").value.trim(), name: file.name, data_base64: data });
+    $("fileStatus").textContent = `sent ${out.receipt.name} (${size(out.receipt.size)}) in ${out.receipt.ms}ms, verified`;
+  } catch (err) { $("fileStatus").innerHTML = `<span class="err">${esc(err.message)}</span>`; }
+};
+
+async function start() {
+  if (!token) return showLogin();
+  try { await refresh(); } catch (_) { return showLogin(); }
+  $("login").classList.add("hidden");
+  $("app").classList.remove("hidden");
+  refreshFiles().catch(() => {});
+  listen();
+  setInterval(() => refresh().catch(() => {}), 5000);
+}
+start();
+</script>
+</body>
+</html>

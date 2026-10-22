@@ -19,6 +19,9 @@ Proximity grants discovery, never authority.
 | **Replay** | Dedup on `(source, message_id)`, plus a ±1 h timestamp window for non-announce packets. |
 | **Flooding / DoS** | 100 packets/s per source, 120 calls/min per caller, bounded dedup/reassembly/inbox memory, a decompression-bomb guard, and TTL ≤ 7. |
 | **Local API** | A 256-bit bearer token in `~/.amara/api.token` (mode 0600), compared in constant time, bound to `127.0.0.1` by default. |
+| **Store and forward** | Held messages stay sealed. Envelopes are self-certifying (the inner packet must be signed by the key that hashes to its source), so custodians can neither read nor forge them, and recipients dedup copies. |
+| **Files** | Sealed chunks, BLAKE3 check of the whole file, names stripped of paths and hidden-file dots, never overwriting, size and concurrency caps, `accept = anyone / trusted / off`. |
+| **Emergency stop** | Signed, so robots know who stopped them; `estop_from = anyone / trusted / off`. |
 
 ## What is *not* protected (know your threat model)
 
@@ -29,6 +32,11 @@ Proximity grants discovery, never authority.
 | **Sybil / naming** | Anyone can create identities and pick any display name. Authorise by **PeerId**, never by name. |
 | **Trust on first use** | The first announce for a PeerId pins its key. A PeerId cannot be forged without the matching private key, so a key is only "new" for a new PeerId. |
 | **Tool safety** | A tool you expose runs with *your* permissions. AMARA authenticates the caller; it cannot decide whether the request is wise. |
+| **Custody metadata** | Custodians learn who wrote to whom, when, and how much, and hold that for up to 12 h. Set `[store] custody = false` to carry nothing for others. |
+| **Received files** | Files are saved, never opened or executed, but they come from strangers by default. Use `[files] accept = "trusted"` on machines where that matters. |
+| **Nuisance stops** | With the default `estop_from = "anyone"`, anyone in range can halt your robot (never start it). Use `trusted` where that is a problem. The mesh stop is not a safety-rated e-stop. |
+| **BLE** | BLE link encryption is not used; AMARA's own signatures and sealing protect the content. Advertising reveals that an AMARA node is nearby. |
+| **`--lan` API** | Plain HTTP on your LAN: the token can be sniffed by others on the same network. |
 
 ## Trust and policy
 

@@ -14,7 +14,8 @@ use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 /// Public description of a tool (what peers see in an agent card).
@@ -64,6 +65,38 @@ pub fn validate_tool_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Where a tool sends partial output while it runs. Inactive unless the caller
+/// asked for a streaming call, in which case every [`StreamSink::send`] reaches
+/// the caller as a `RESULT_CHUNK` before the final result.
+#[derive(Clone, Default)]
+pub struct StreamSink(Option<mpsc::UnboundedSender<Value>>);
+
+impl StreamSink {
+    pub fn new(tx: mpsc::UnboundedSender<Value>) -> Self {
+        Self(Some(tx))
+    }
+
+    /// True when the caller is listening for partial output.
+    pub fn is_active(&self) -> bool {
+        self.0.as_ref().is_some_and(|tx| !tx.is_closed())
+    }
+
+    /// Send a piece of partial output. Returns false when nobody is listening.
+    pub fn send(&self, data: Value) -> bool {
+        self.0.as_ref().is_some_and(|tx| tx.send(data).is_ok())
+    }
+}
+
+impl std::fmt::Debug for StreamSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.is_active() {
+            "StreamSink(active)"
+        } else {
+            "StreamSink(inactive)"
+        })
+    }
+}
+
 /// Everything a tool learns about an invocation.
 #[derive(Debug, Clone)]
 pub struct CallContext {
@@ -71,6 +104,8 @@ pub struct CallContext {
     pub caller: PeerId,
     pub caller_name: String,
     pub args: Value,
+    /// Partial output channel (streaming calls only).
+    pub stream: StreamSink,
 }
 
 /// Result type returned by tools: JSON on success, message on failure.
@@ -121,6 +156,7 @@ const MAX_COMMAND_OUTPUT: usize = 1024 * 1024;
 /// A tool that runs a local program. No shell is involved: `program` is
 /// executed directly with fixed `args`, the call's JSON arguments are written
 /// to stdin, and stdout becomes the result (parsed as JSON when possible).
+/// For streaming calls, each stdout line is also sent as it is printed.
 #[derive(Debug, Clone)]
 pub struct CommandTool {
     spec: ToolSpec,
@@ -169,16 +205,56 @@ impl Tool for CommandTool {
             let _ = stdin.write_all(&input).await;
         }
 
-        let output = tokio::time::timeout(self.timeout, child.wait_with_output())
-            .await
-            .map_err(|_| {
-                format!(
+        let mut stdout_pipe = child.stdout.take().ok_or("no stdout")?;
+        let mut stderr_pipe = child.stderr.take().ok_or("no stderr")?;
+        let stream = ctx.stream;
+        let stdout_task = tokio::spawn(async move {
+            let mut out = Vec::new();
+            if stream.is_active() {
+                let mut lines = BufReader::new(stdout_pipe);
+                let mut line = Vec::new();
+                while lines.read_until(b'\n', &mut line).await.unwrap_or(0) > 0 {
+                    if out.len() < MAX_COMMAND_OUTPUT {
+                        out.extend_from_slice(&line);
+                    }
+                    let text = String::from_utf8_lossy(&line).trim_end().to_string();
+                    stream.send(Value::String(text));
+                    line.clear();
+                }
+            } else {
+                let _ = (&mut stdout_pipe)
+                    .take(MAX_COMMAND_OUTPUT as u64)
+                    .read_to_end(&mut out)
+                    .await;
+                // Drain the rest so the program never blocks on a full pipe.
+                let _ = tokio::io::copy(&mut stdout_pipe, &mut tokio::io::sink()).await;
+            }
+            out
+        });
+        let stderr_task = tokio::spawn(async move {
+            let mut err = Vec::new();
+            let _ = stderr_pipe.read_to_end(&mut err).await;
+            err
+        });
+
+        let status = match tokio::time::timeout(self.timeout, child.wait()).await {
+            Ok(status) => status.map_err(|e| e.to_string())?,
+            Err(_) => {
+                let _ = child.kill().await;
+                stdout_task.abort();
+                stderr_task.abort();
+                return Err(format!(
                     "{} timed out after {}s",
                     self.spec.name,
                     self.timeout.as_secs()
-                )
-            })?
-            .map_err(|e| e.to_string())?;
+                ));
+            }
+        };
+        let output = std::process::Output {
+            status,
+            stdout: stdout_task.await.unwrap_or_default(),
+            stderr: stderr_task.await.unwrap_or_default(),
+        };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -219,7 +295,19 @@ mod tests {
             caller: PeerId::from_bytes([1; 8]),
             caller_name: "t".into(),
             args,
+            stream: StreamSink::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn stream_sink_reports_listeners() {
+        assert!(!StreamSink::default().is_active());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = StreamSink::new(tx);
+        assert!(sink.is_active() && sink.send(serde_json::json!(1)));
+        assert_eq!(rx.recv().await.unwrap(), 1);
+        drop(rx);
+        assert!(!sink.send(serde_json::json!(2)));
     }
 
     #[tokio::test]

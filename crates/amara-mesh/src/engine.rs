@@ -14,23 +14,30 @@
 //!   lowest-hop copy becomes the next hop for unicast traffic to that peer, so
 //!   directed packets travel one path instead of flooding. Unknown routes fall
 //!   back to flooding.
+//! * **Store and forward**: a packet for a peer that is out of range is
+//!   wrapped in a self-certifying [`Envelope`] and held by the sender and by
+//!   every custodian that hears the `STORE` broadcast. When the peer announces
+//!   again, custodians hand it over in `FORWARD` packets; the recipient checks
+//!   the original sender's signature and dedups copies from several custodians.
 
 use crate::dedup::DedupCache;
 use crate::registry::PeerRegistry;
+use crate::store::{Custody, KnownPeer, KnownPeers, StatePaths, Stored};
 use amara_core::constants::{
     ANNOUNCE_INTERVAL_SECS, DEFAULT_TTL, MAX_CLOCK_SKEW_SECS, PEER_EXPIRY_SECS,
-    RATE_LIMIT_PACKETS_PER_SEC, RELAY_JITTER_MAX_MS, RELAY_JITTER_MIN_MS,
+    RATE_LIMIT_PACKETS_PER_SEC, RELAY_JITTER_MAX_MS, RELAY_JITTER_MIN_MS, STORE_FORWARD_TTL_SECS,
 };
 use amara_core::peer::{PeerId, PeerInfo, TrustLevel};
 use amara_core::types::{AmaraEvent, now_timestamp};
 use amara_core::{AmaraError, Result};
 use amara_crypto::identity::NodeIdentity;
 use amara_protocol::codec::Announce;
-use amara_protocol::{FrameAssembler, Packet, PacketType, encode_frames};
+use amara_protocol::{Envelope, FrameAssembler, Packet, PacketType, encode_frames};
 use amara_transport::{Transport, TransportEvent};
 use dashmap::DashMap;
 use rand::Rng;
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify, RwLock, broadcast};
@@ -46,6 +53,13 @@ pub struct MeshConfig {
     pub blocked: HashSet<PeerId>,
     /// Peers (by PeerId) promoted to `TrustLevel::Trusted` when they announce.
     pub trusted: HashSet<PeerId>,
+    /// Hold packets for other peers that are out of range (store and forward).
+    /// Packets this node originates are always held until delivered or expired.
+    pub custody: bool,
+    /// Where known peers and held packets are persisted (`None` = memory only).
+    pub state_dir: Option<PathBuf>,
+    /// Packets accepted per second from any one source (flood protection).
+    pub packets_per_sec: u32,
 }
 
 impl Default for MeshConfig {
@@ -55,6 +69,9 @@ impl Default for MeshConfig {
             relay_enabled: true,
             blocked: HashSet::new(),
             trusted: HashSet::new(),
+            custody: true,
+            state_dir: None,
+            packets_per_sec: RATE_LIMIT_PACKETS_PER_SEC,
         }
     }
 }
@@ -65,6 +82,17 @@ pub struct Inbound {
     pub packet: Packet,
     /// Display name of the sender at the time of delivery.
     pub sender_name: String,
+    /// Delivered late by store and forward (the sender may be offline now).
+    pub stored: bool,
+}
+
+/// How a directed packet left this node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    /// The destination is in range; sent now.
+    Sent,
+    /// The destination is out of range; held for delivery when it returns.
+    Stored,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -88,6 +116,9 @@ pub struct MeshEngine {
     packet_tx: broadcast::Sender<Inbound>,
     event_tx: broadcast::Sender<AmaraEvent>,
     link_up: Arc<Notify>,
+    known: KnownPeers,
+    custody: Custody,
+    state: Option<StatePaths>,
     tasks: StdMutex<Vec<JoinHandle<()>>>,
 }
 
@@ -95,6 +126,12 @@ impl MeshEngine {
     pub fn new(identity: NodeIdentity, config: MeshConfig) -> Self {
         let (packet_tx, _) = broadcast::channel(4096);
         let (event_tx, _) = broadcast::channel(1024);
+        let known = KnownPeers::default();
+        let custody = Custody::default();
+        let state = config.state_dir.as_deref().map(StatePaths::new);
+        if let Some(state) = &state {
+            state.load(&known, &custody);
+        }
         Self {
             identity,
             config,
@@ -107,6 +144,9 @@ impl MeshEngine {
             packet_tx,
             event_tx,
             link_up: Arc::new(Notify::new()),
+            known,
+            custody,
+            state,
             tasks: StdMutex::new(Vec::new()),
         }
     }
@@ -138,6 +178,28 @@ impl MeshEngine {
     /// runtime can announce immediately instead of waiting for the next beacon.
     pub fn link_up(&self) -> Arc<Notify> {
         self.link_up.clone()
+    }
+
+    /// Keys of a peer we have verified before, even if it is offline now.
+    pub fn known_peer(&self, peer: &PeerId) -> Option<KnownPeer> {
+        self.known.get(peer)
+    }
+
+    /// Every peer we have verified (online or not).
+    pub fn known_peers(&self) -> Vec<(PeerId, KnownPeer)> {
+        self.known.all()
+    }
+
+    /// Packets held for out-of-range peers: (destination, count).
+    pub fn held(&self) -> Vec<(PeerId, usize)> {
+        self.custody.summary()
+    }
+
+    /// Write known peers and held packets to `state_dir` (no-op without one).
+    pub fn persist(&self) {
+        if let Some(state) = &self.state {
+            state.save(&self.known, &self.custody);
+        }
     }
 
     /// Hop count to a peer, if a route is known.
@@ -175,11 +237,12 @@ impl MeshEngine {
         Ok(())
     }
 
-    /// Stop background tasks (transports stop when dropped).
+    /// Stop background tasks (transports stop when dropped) and persist state.
     pub fn shutdown(&self) {
         for task in self.tasks.lock().unwrap().drain(..) {
             task.abort();
         }
+        self.persist();
     }
 
     async fn pump(
@@ -237,6 +300,8 @@ impl MeshEngine {
             self.routes.retain(|_, r| r.updated.elapsed() < route_ttl);
             self.rate
                 .retain(|_, (start, _)| start.elapsed() < Duration::from_secs(5));
+            self.custody.expire();
+            self.persist();
         }
     }
 
@@ -254,6 +319,164 @@ impl MeshEngine {
             return Ok(());
         }
         self.forward(&bytes, dest, None).await
+    }
+
+    /// Send a directed packet now if its destination is in range, otherwise hold
+    /// it (here and with nearby custodians) until the destination comes back.
+    pub async fn send_or_store(&self, packet: Packet) -> Result<Delivery> {
+        let dest = packet.header.destination_id;
+        if dest.is_broadcast() || self.registry.get_peer(&dest).is_some() {
+            self.send_packet(packet).await?;
+            return Ok(Delivery::Sent);
+        }
+        self.store(packet).await?;
+        Ok(Delivery::Stored)
+    }
+
+    /// Hold a directed packet for an out-of-range destination.
+    pub async fn store(&self, mut packet: Packet) -> Result<()> {
+        let dest = packet.header.destination_id;
+        if dest.is_broadcast() {
+            return Err(AmaraError::Other("broadcasts cannot be stored".into()));
+        }
+        packet.header.ttl = packet.header.ttl.min(self.config.max_ttl);
+        packet.sign(self.identity.signing_key());
+        let _ = self
+            .dedup
+            .is_duplicate(packet.header.source_id, packet.header.message_id);
+        let envelope = Envelope {
+            ed25519_public: self.identity.public_key_bytes(),
+            x25519_public: self.identity.x25519_public().to_bytes(),
+            name: self.identity.display_name().to_string(),
+            packet: packet.encode(),
+        }
+        .encode();
+        self.custody.hold(Stored {
+            dest,
+            source: packet.header.source_id,
+            message_id: packet.header.message_id,
+            stored_at: now_timestamp(),
+            envelope: envelope.clone(),
+        });
+        // Nearby custodians keep a copy, so delivery works even if we leave first.
+        let store = Packet::broadcast(
+            PacketType::Store,
+            self.identity.peer_id(),
+            DEFAULT_TTL,
+            envelope,
+        );
+        self.send_packet(store).await
+    }
+
+    /// Hand everything held for `peer` over, now that it is back in range.
+    fn flush_custody(self: &Arc<Self>, peer: PeerId) {
+        if self.custody.summary().iter().all(|(dest, _)| *dest != peer) {
+            return;
+        }
+        let engine = self.clone();
+        tokio::spawn(async move {
+            // Give the returning peer a moment to learn our key from our announce,
+            // or it cannot verify the FORWARD packets.
+            tokio::time::sleep(Duration::from_millis(800)).await;
+            let items = engine.custody.take_for(&peer);
+            debug!("forwarding {} held packet(s) to {peer}", items.len());
+            for item in items {
+                let packet = Packet::new(
+                    PacketType::Forward,
+                    engine.identity.peer_id(),
+                    peer,
+                    DEFAULT_TTL,
+                    item.envelope.clone(),
+                );
+                if let Err(e) = engine.send_packet(packet).await {
+                    debug!("forward to {peer} failed ({e}); keeping it");
+                    engine.custody.hold(item);
+                }
+            }
+        });
+    }
+
+    /// Open an envelope, check its inner packet is genuine and pin the sender's keys.
+    fn open_envelope(&self, payload: &[u8]) -> Result<(Envelope, Packet)> {
+        let envelope = Envelope::decode(payload)?;
+        let inner = envelope.open().inspect_err(|_| {
+            self.security_event("invalid stored packet", envelope.sender());
+        })?;
+        let age = now_timestamp().saturating_sub(inner.header.timestamp);
+        if age as u64 > STORE_FORWARD_TTL_SECS + MAX_CLOCK_SKEW_SECS as u64 {
+            return Err(AmaraError::Expired);
+        }
+        self.known.remember(
+            envelope.sender(),
+            KnownPeer {
+                ed25519: envelope.ed25519_public,
+                x25519: envelope.x25519_public,
+                name: envelope.name.clone(),
+                last_seen: inner.header.timestamp,
+            },
+        );
+        Ok((envelope, inner))
+    }
+
+    /// A STORE broadcast: keep the packet for its destination (or take it, if that is us).
+    fn accept_store(self: &Arc<Self>, packet: &Packet) -> Result<()> {
+        let (envelope, inner) = self.open_envelope(&packet.payload)?;
+        if inner.header.source_id != packet.header.source_id {
+            return Err(AmaraError::PermissionDenied(
+                "stored packets must be submitted by their sender".into(),
+            ));
+        }
+        let dest = inner.header.destination_id;
+        if dest.is_broadcast() {
+            return Ok(());
+        }
+        if dest == self.identity.peer_id() {
+            self.deliver_stored(inner, envelope.name);
+            return Ok(());
+        }
+        if self.config.custody {
+            self.custody.hold(Stored {
+                dest,
+                source: inner.header.source_id,
+                message_id: inner.header.message_id,
+                stored_at: now_timestamp(),
+                envelope: packet.payload.clone(),
+            });
+            // The sender lost sight of the destination, but we may still see it.
+            if self.registry.get_peer(&dest).is_some() {
+                self.flush_custody(dest);
+            }
+        }
+        Ok(())
+    }
+
+    /// A FORWARD addressed to us: unwrap and deliver the original packet.
+    fn accept_forward(&self, packet: &Packet) -> Result<()> {
+        let (envelope, inner) = self.open_envelope(&packet.payload)?;
+        if inner.header.destination_id != self.identity.peer_id() {
+            return Err(AmaraError::PermissionDenied(
+                "forwarded packet is not for us".into(),
+            ));
+        }
+        self.deliver_stored(inner, envelope.name);
+        Ok(())
+    }
+
+    fn deliver_stored(&self, inner: Packet, name: String) {
+        let source = inner.header.source_id;
+        if self.dedup.is_duplicate(source, inner.header.message_id) {
+            return;
+        }
+        let sender_name = self
+            .registry
+            .get_peer(&source)
+            .map(|p| p.display_name)
+            .unwrap_or(name);
+        let _ = self.packet_tx.send(Inbound {
+            packet: inner,
+            sender_name,
+            stored: true,
+        });
     }
 
     /// Send to the next hop for `dest`, or flood if no route is known.
@@ -292,7 +515,7 @@ impl MeshEngine {
             *entry = (Instant::now(), 0);
         }
         entry.1 += 1;
-        entry.1 <= RATE_LIMIT_PACKETS_PER_SEC
+        entry.1 <= self.config.packets_per_sec
     }
 
     /// Process one complete packet received on transport `index` from link neighbor `from`.
@@ -320,11 +543,15 @@ impl MeshEngine {
         let sender_name = if packet.header.packet_type == PacketType::Announce {
             self.accept_announce(&packet, index, from)?
         } else {
-            let peer = self
+            // Peers we have met before stay verifiable between beacons, e.g. right
+            // after they come back into range and before their next announce.
+            let (public_key, name) = self
                 .registry
                 .get_peer(&source)
+                .map(|p| (p.public_key, p.display_name))
+                .or_else(|| self.known.get(&source).map(|k| (k.ed25519, k.name)))
                 .ok_or_else(|| AmaraError::UnknownPeer(source.to_string()))?;
-            let key = ed25519_dalek::VerifyingKey::from_bytes(&peer.public_key).map_err(|_| {
+            let key = ed25519_dalek::VerifyingKey::from_bytes(&public_key).map_err(|_| {
                 AmaraError::InvalidSignature {
                     peer: source.to_string(),
                 }
@@ -340,7 +567,7 @@ impl MeshEngine {
                 return Err(AmaraError::Expired);
             }
             self.registry.touch_peer(&source);
-            peer.display_name
+            name
         };
 
         let dest = packet.header.destination_id;
@@ -351,11 +578,26 @@ impl MeshEngine {
             .then(|| packet.clone())
             .and_then(|mut r| r.header.decrement_ttl().then_some(r));
 
-        if for_us {
-            let _ = self.packet_tx.send(Inbound {
-                packet,
-                sender_name,
-            });
+        match packet.header.packet_type {
+            PacketType::Store => {
+                if let Err(e) = self.accept_store(&packet) {
+                    debug!("rejected STORE from {source}: {e}");
+                }
+            }
+            PacketType::Forward if dest == self.identity.peer_id() => {
+                if let Err(e) = self.accept_forward(&packet) {
+                    debug!("rejected FORWARD from {source}: {e}");
+                }
+            }
+            PacketType::Forward => {}
+            _ if for_us => {
+                let _ = self.packet_tx.send(Inbound {
+                    packet,
+                    sender_name,
+                    stored: false,
+                });
+            }
+            _ => {}
         }
 
         if let Some(relay) = relay {
@@ -377,7 +619,12 @@ impl MeshEngine {
     }
 
     /// Verify a self-certifying announce, learn the peer and its route.
-    fn accept_announce(&self, packet: &Packet, index: usize, from: PeerId) -> Result<String> {
+    fn accept_announce(
+        self: &Arc<Self>,
+        packet: &Packet,
+        index: usize,
+        from: PeerId,
+    ) -> Result<String> {
         let source = packet.header.source_id;
         let announce = Announce::decode(&packet.payload)?;
         if announce.peer_id() != source {
@@ -439,7 +686,24 @@ impl MeshEngine {
             .as_ref()
             .is_some_and(|e| e.capabilities != info.capabilities);
         self.registry.update_peer(source, info);
+        self.known.remember(
+            source,
+            KnownPeer {
+                ed25519: announce.public_key,
+                x25519: announce.x25519_public,
+                name: announce.name.clone(),
+                last_seen: now_timestamp(),
+            },
+        );
 
+        // A peer that is new, or back after missing a few beacons, may have
+        // packets waiting for it.
+        let returning = existing.as_ref().is_none_or(|e| {
+            e.is_expired(chrono::Duration::seconds(3 * ANNOUNCE_INTERVAL_SECS as i64))
+        });
+        if returning {
+            self.flush_custody(source);
+        }
         if existing.is_none() {
             info!("peer joined: {} ({source}) {hops} hop(s)", announce.name);
             let _ = self.event_tx.send(AmaraEvent::PeerJoined {

@@ -27,6 +27,9 @@ pub enum InboxItem {
         channel: Option<String>,
         direct: bool,
         at: u32,
+        /// Delivered late by store and forward (sent while we were out of range).
+        #[serde(default, skip_serializing_if = "is_false")]
+        stored: bool,
     },
     /// A call to a tool this agent exposed via `expose`; answer with `reply`.
     Call {
@@ -38,7 +41,32 @@ pub enum InboxItem {
         at: u32,
         /// Seconds left before the caller gives up.
         expires_in: u64,
+        /// The caller accepts partial results (`reply` with `partial: true`) before the final one.
+        #[serde(default, skip_serializing_if = "is_false")]
+        stream: bool,
     },
+    /// A file another agent sent us, already verified and saved.
+    File {
+        from: String,
+        from_name: String,
+        name: String,
+        path: String,
+        size: u64,
+        /// Hex BLAKE3 of the contents.
+        hash: String,
+        at: u32,
+    },
+    /// An emergency stop this node accepted. Robots must halt.
+    Stop {
+        from: String,
+        from_name: String,
+        reason: String,
+        at: u32,
+    },
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 /// Bounded FIFO with blocking take and a live broadcast feed.
@@ -115,6 +143,7 @@ mod tests {
             channel: None,
             direct: true,
             at: 0,
+            stored: false,
         }
     }
 
